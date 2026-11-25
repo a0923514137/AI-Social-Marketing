@@ -1,7 +1,7 @@
 const schedulerRole=(req:Request)=>{const key=Deno.env.get("SOCIAL_SCHEDULER_KEY")||"";return key.length>=32&&req.headers.get("x-social-scheduler-key")===key};
 const json=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,headers:{"content-type":"application/json"}});
 const env=(k:string)=>Deno.env.get(k)?.trim()||"";
-export default (async(req)=>{
+export default (async(req: Request)=>{
  if(req.method!=="POST")return json({error:"method_not_allowed"},405);
  const key=env("THREADS_PATROL_ADMIN_KEY");
  const schedulerAuth=schedulerRole(req);
