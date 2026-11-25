@@ -1,12 +1,12 @@
-# 快速安裝 V2｜目標 10 分鐘
-計時從客戶已備妥 GitHub、Supabase 專案及 Meta 授權開始，不含第三方審核。
-## 客戶操作
-1. 將 ZIP 上傳 AI，要求快速安裝。
-2. AI 一次列出所有必要帳號及金鑰設定位置；真實金鑰只輸入客戶自己的 Secrets，不貼聊天。
-3. 客戶確認目標為自己的全新 Supabase 專案。
-4. 執行待開發的自動初始化及部署流程，發送開關維持 false。
-5. 自動驗收資料庫、權限、Function、Webhook、排程及歷史留言截止；逐平台受控測試後才啟用。
-## 開發要求
-自動化必須有目標專案確認、既有資料保護、失敗即停止、可重跑的進度紀錄、遮蔽金鑰及清楚的錯誤提示。禁止覆蓋既有客戶資料。Meta 授權及回呼設定若不能自動化，集中成一次人工操作。
-## 狀態
-本文件為 R114 設計規格，不是可執行安裝器。自動部署、初始化與驗收尚未實作；10 分鐘尚未實測，NO_GO。
+# 快速安裝 V2｜AI 安裝入口
+客戶只需上傳完整 ZIP，輸入「請帶領我快速安裝」。AI 先閱讀本文件、AGENTS.md、scripts/ 與 .github/workflows/customer-install.yml。
+## 預設快速路徑
+1. 一次確認客戶自己的 GitHub 私人儲存庫、全新 Supabase 專案及 Meta 三平台授權是否備妥。匯入完整交付分支，包含隱藏的 .github 目錄。不要逐項重複詢問已完成事項。
+2. 引導客戶在 GitHub Settings → Environments 建立 customer-install，於該環境 Secrets 集中設定 SUPABASE_ACCESS_TOKEN、CUSTOMER_DB_URL、FB_PAGE_ID、FB_PAGE_ACCESS_TOKEN、FB_APP_SECRET、FB_WEBHOOK_VERIFY_TOKEN、IG_BUSINESS_ACCOUNT_ID、IG_USERNAME、IG_APP_SECRET、INSTAGRAM_ACCESS_TOKEN、THREADS_ACCESS_TOKEN、SOCIAL_SCHEDULER_KEY（至少32個英數或 _.~- 字元）。真實金鑰不得貼給 AI 或寫入 Git。
+3. 確認客戶自己的全新專案 reference；在 Actions 選 Customer quick install (NO_GO)，Run workflow，兩個輸入欄位填相同 reference。必須使用客戶自己的私人儲存庫。取得客戶明確同意後執行一次。
+4. 等待 Actions 結果。腳本會初始化 SQL、部署三個 Functions、上傳金鑰、建立預覽排程及執行基本驗收。若失敗，先讀取遮蔽敏感資料的錯誤日誌；不要盲目重跑，部分安裝後新專案檢查會阻擋重跑。
+5. 引導 Meta Webhook 訂閱及驗證、設定三平台關鍵字與固定回覆（參考 docs/CUSTOMER-SETUP.zh-TW.md），確認歷史留言截止、受控留言與防重複。未完成不得開啟發送。
+## AI 規則
+繁體中文；每次提供一個操作階段，可集中同類設定；回覆33或截圖繼續。不得將舊手動流程當預設。只有自動化失敗且確認原因後才採必要人工補救。不得索取真實金鑰或操作原業主專案。
+## 限制
+10分鐘為帳號及授權備妥後的目標，尚未實測。自動安裝器尚未完成真實客戶驗收；Threads 預覽只檢查設定，IG 海巡唯讀。Meta 訂閱及真實回覆待驗收，NO_GO。
