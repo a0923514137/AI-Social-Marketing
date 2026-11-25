@@ -18,6 +18,9 @@ export default (async(req: Request)=>{
  const enabled=Deno.env.get("SOCIAL_SEND_ENABLED")==="true"&&control.rows[0]?.send_enabled===true;
  if(mode==="preview")return out({mode,configured:true,db_send_enabled:enabled,scan_supported:true,external_sends:0,production:"NO_GO"});
  if(!enabled)return out({error:"send_disabled",sent:0},403);
+ const baseline=await db("rpc/threads_patrol_baseline","POST",{});
+ const cutoff=typeof baseline.rows==="string"?Date.parse(baseline.rows):NaN;
+ if(!baseline.ok||!Number.isFinite(cutoff)||cutoff>Date.now())return out({error:"baseline_unavailable",sent:0},503);
  const rules=await db("r54_reply_templates?platform=eq.threads&select=keyword,reply_text");
  if(!rules.ok)return out({error:"rules_unavailable"},502);
  const norm=(v:string)=>v.normalize("NFKC").trim().toLowerCase();
@@ -27,10 +30,12 @@ export default (async(req: Request)=>{
  let posts:any;try{posts=await api("me/threads?fields=id,timestamp&limit=10")}catch{return out({error:"threads_posts_failed",sent:0},502)}
  for(const target of (posts.data||[]).slice(0,10)){
   const post=String(target.id||"");if(!/^[0-9]+$/.test(post))continue;
-  let page:any;try{page=await api(post+"/replies?fields=id,text,username&limit=50")}catch{continue}
+  let page:any;try{page=await api(post+"/replies?fields=id,text,username,timestamp&limit=50")}catch{continue}
   for(const c of (page.data||[]).slice(0,50)){
    scanned++;const comment=String(c.id||"");
    if(!/^[0-9]+$/.test(comment)||!c.username||norm(String(c.username||""))===norm(String(me.username||""))){skipped++;continue}
+   const created=typeof c.timestamp==="string"?Date.parse(c.timestamp):NaN;
+   if(!Number.isFinite(created)||created<=cutoff||created>Date.now()){skipped++;continue}
    const rule=rules.rows.slice().sort((a:any,b:any)=>String(b.keyword).length-String(a.keyword).length).find((r:any)=>norm(String(c.text||"")).includes(norm(String(r.keyword||"")))&&String(r.keyword||"").trim());
    if(!rule)continue;matched++;
    const claim=await db("r54_reply_claims?on_conflict=platform,comment_id","POST",{platform:"threads",comment_id:comment,post_id:post,state:"sending"},"resolution=ignore-duplicates,return=representation");
