@@ -1,3 +1,6 @@
+# V2 快速交付補充規則
+優先提供集中金鑰設定、手動觸發的自動安裝 workflow、預覽排程及自動驗收。START-HERE.md 必須以快速路徑為預設；10分鐘是待驗證目標，不含第三方審核。
+
 ---
 name: customer-buyout-delivery
 description: 將既有應用程式整理成客戶自行下載、使用 GPT 引導安裝及驗收的獨立買斷交付包。
