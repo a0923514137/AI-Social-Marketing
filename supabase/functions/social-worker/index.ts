@@ -1,0 +1,3 @@
+import scan from "./threads_scan.ts";
+import patrol from "./threads_patrol.ts";
+Deno.serve(async req=>{if(req.method!=="POST")return new Response("method",{status:405});const key=Deno.env.get("SOCIAL_SCHEDULER_KEY")||"";if(key.length<32||req.headers.get("x-social-scheduler-key")!==key)return new Response("unauthorized",{status:401});let x;try{x=await req.json()}catch{return new Response("invalid_json",{status:400})}const handler=x.task==="threads_scan"?scan:x.task==="threads_patrol"?patrol:null;if(!handler)return new Response("unknown_task",{status:400});return handler(new Request(req.url,{method:"POST",headers:req.headers,body:JSON.stringify({mode:x.mode||"preview"})}));});
