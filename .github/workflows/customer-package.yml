@@ -1,0 +1,44 @@
+name: Customer buyout package (NO_GO)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r101-template-staging
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.5.6
+      - name: Validate
+        run: |
+          deno check supabase/functions/meta-webhook/index.ts
+          deno check supabase/functions/social-worker/index.ts
+          deno check supabase/functions/instagram-patrol/index.ts
+          grep -qx 'SOCIAL_SEND_ENABLED=false' .env.example
+          grep -qx 'SOCIAL_TELEGRAM_ENABLED=false' .env.example
+      - name: Package allowlisted files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p package/.github/workflows
+          for f in .env.example docs/CUSTOMER-SETUP.zh-TW.md docs/INSTALL.zh-TW.md supabase/bootstrap/001_social_schema.sql supabase/functions/meta-webhook/index.ts supabase/functions/social-worker/index.ts supabase/functions/social-worker/threads_scan.ts supabase/functions/social-worker/threads_patrol.ts supabase/functions/instagram-patrol/index.ts .github/workflows/template-check.yml; do
+            test -f "$f"
+            test ! -L "$f"
+            install -D -m 644 "$f" "package/$f"
+          done
+          printf '%s\n' 'CANDIDATE ONLY - NO_GO' 'Read docs/CUSTOMER-SETUP.zh-TW.md first.' 'No deployment or live messaging has been validated.' > package/README.txt
+          git rev-parse HEAD > package/SOURCE_COMMIT.txt
+          if grep -R -nE 'eziafqttckcdvjxxvxsv|1372124255993564|17841402364308570|sandwichdadhelp' package; then exit 1; fi
+          (cd package && zip -qr ../customer-buyout-NO_GO.zip .)
+          sha256sum customer-buyout-NO_GO.zip > customer-buyout-NO_GO.zip.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: customer-buyout-NO_GO
+          path: |
+            customer-buyout-NO_GO.zip
+            customer-buyout-NO_GO.zip.sha256
+          if-no-files-found: error
