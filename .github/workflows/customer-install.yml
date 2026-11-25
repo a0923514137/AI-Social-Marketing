@@ -34,4 +34,17 @@ jobs:
           CONFIRM_NEW_PROJECT: ${{ inputs.confirm }}
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           CUSTOMER_DB_URL: ${{ secrets.CUSTOMER_DB_URL }}
-        run: bash scripts/quick-install.sh
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
+          FB_APP_SECRET: ${{ secrets.FB_APP_SECRET }}
+          FB_WEBHOOK_VERIFY_TOKEN: ${{ secrets.FB_WEBHOOK_VERIFY_TOKEN }}
+          IG_BUSINESS_ACCOUNT_ID: ${{ secrets.IG_BUSINESS_ACCOUNT_ID }}
+          IG_USERNAME: ${{ secrets.IG_USERNAME }}
+          IG_APP_SECRET: ${{ secrets.IG_APP_SECRET }}
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          SOCIAL_SCHEDULER_KEY: ${{ secrets.SOCIAL_SCHEDULER_KEY }}
+        run: |
+          python3 scripts/check-secrets.py
+          bash scripts/quick-install.sh
+          python3 scripts/check-secrets.py --upload
