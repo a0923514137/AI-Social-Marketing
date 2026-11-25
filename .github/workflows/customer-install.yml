@@ -49,3 +49,4 @@ jobs:
           bash scripts/quick-install.sh
           python3 scripts/check-secrets.py --upload
           bash scripts/setup-schedule.sh
+          python3 scripts/verify-install.py
