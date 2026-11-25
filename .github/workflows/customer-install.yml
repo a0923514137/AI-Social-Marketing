@@ -48,3 +48,4 @@ jobs:
           python3 scripts/check-secrets.py
           bash scripts/quick-install.sh
           python3 scripts/check-secrets.py --upload
+          bash scripts/setup-schedule.sh
