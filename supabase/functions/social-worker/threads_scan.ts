@@ -1,6 +1,6 @@
 const schedulerRole=(req:Request)=>{const key=Deno.env.get("SOCIAL_SCHEDULER_KEY")||"";return key.length>=32&&req.headers.get("x-social-scheduler-key")===key};
 const out=(x:unknown,s=200)=>new Response(JSON.stringify(x),{status:s,headers:{"content-type":"application/json","cache-control":"no-store"}});
-export default (async req=>{
+export default (async(req: Request)=>{
  if(req.method!=="POST")return out({error:"method_not_allowed"},405);
  const key=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")||"";
  if(!key||!schedulerRole(req))return out({error:"unauthorized"},401);
