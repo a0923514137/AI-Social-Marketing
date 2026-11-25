@@ -1,26 +1,12 @@
-# 客戶安裝入口｜使用 ChatGPT 一步一步完成
-
-下載本儲存庫 ZIP 並解壓縮，將 ZIP 上傳至 ChatGPT，複製下方指令。不要上傳含真實金鑰的檔案。
-
-## 複製給 ChatGPT 的指令
-
-你是我的社群自動化系統安裝助手。我不是工程師，請先閱讀我上傳的完整程式碼、docs/CUSTOMER-SETUP.zh-TW.md、docs/INSTALL.zh-TW.md、.env.example 及 SQL。以實際檔案為準，不要假設未提供的功能已完成。每次只給我一個可執行步驟，等待我回覆 33 或截圖，再繼續。已完成的步驟不要重複。使用繁體中文。
-
-依序協助我：
-1. 申請自己的 GitHub 帳號，建立私人儲存庫，匯入下載的程式。
-2. 申請自己的 Supabase 帳號及全新專案，確認 Project Reference ID，禁止使用供應商或其他既有專案。
-3. 檢查初始化 SQL 及安全性，取得我的確認後才在新專案執行，確認資料表、RPC、RLS 與權限。
-4. 申請自己的 Meta Developer App，依最新官方文件設定 Facebook 粉專、Instagram 專業帳號及 Threads 授權。逐平台確認權限及帳號資格。
-5. 引導我在自己的 Supabase Secrets 設定 .env.example 所列變數，不要要求我在聊天中貼出真實金鑰。保持發送開關 false。
-6. 檢查 GitHub Actions、Edge Functions 設定及 CLI 最新官方文件，補齊缺少的部署設定。先取得我的確認，再部署至我的新專案。Meta webhook 必須驗證簽章；排程入口必須驗證排程密鑰。
-7. 設定自己的 Meta Webhook callback，驗證回呼及簽章。
-8. 依中文指南設定三平台相同關鍵字與固定回覆。
-9. 如需 Telegram，協助我建立 Bot。依官方文件建立每五分鐘排程，先使用唯讀預覽，不得擅自啟用發送。
-10. 驗收三平台、歷史留言截止、防重複、失敗處理、權限及發送開關。每個平台先以受控測試留言驗證，取得我的明確同意才啟用發送。
-11. 整理我的安裝結果、未完成項目及日後停用、更新、金鑰輪替方法。
-
-若 ChatGPT 無法直接操作我的 GitHub 或 Supabase，請提供網頁操作步驟或可複製指令，不能聲稱已操作。若遇到錯誤，先依實際日誌修正，不要反覆執行相同失敗步驟。
-
-## 目前版本限制
-
-本儲存庫為候選版 NO_GO，尚未完成新客戶端到端驗收；IG 海巡為唯讀預覽，部署及排程設定需補齊。不可將靜態檢查成功當成正式上線成功。請在完成驗收前保持自動發送關閉。
+# 快速安裝 V2｜AI 安裝入口
+客戶只需上傳完整 ZIP，輸入「請帶領我快速安裝」。AI 先閱讀本文件、AGENTS.md、scripts/ 與 .github/workflows/customer-install.yml。
+## 預設快速路徑
+1. 一次確認客戶自己的 GitHub 私人儲存庫、全新 Supabase 專案及 Meta 三平台授權是否備妥。匯入完整交付分支，包含隱藏的 .github 目錄。不要逐項重複詢問已完成事項。
+2. 引導客戶在 GitHub Settings → Environments 建立 customer-install，於該環境 Secrets 集中設定 SUPABASE_ACCESS_TOKEN、CUSTOMER_DB_URL、FB_PAGE_ID、FB_PAGE_ACCESS_TOKEN、FB_APP_SECRET、FB_WEBHOOK_VERIFY_TOKEN、IG_BUSINESS_ACCOUNT_ID、IG_USERNAME、IG_APP_SECRET、INSTAGRAM_ACCESS_TOKEN、THREADS_ACCESS_TOKEN、SOCIAL_SCHEDULER_KEY（至少32個英數或 _.~- 字元）。真實金鑰不得貼給 AI 或寫入 Git。
+3. 確認客戶自己的全新專案 reference；在 Actions 選 Customer quick install (NO_GO)，Run workflow，兩個輸入欄位填相同 reference。必須使用客戶自己的私人儲存庫。取得客戶明確同意後執行一次。
+4. 等待 Actions 結果。腳本會初始化 SQL、部署三個 Functions、上傳金鑰、建立預覽排程及執行基本驗收。若失敗，先讀取遮蔽敏感資料的錯誤日誌；不要盲目重跑，部分安裝後新專案檢查會阻擋重跑。
+5. 引導 Meta Webhook 訂閱及驗證、設定三平台關鍵字與固定回覆（參考 docs/CUSTOMER-SETUP.zh-TW.md），確認歷史留言截止、受控留言與防重複。未完成不得開啟發送。
+## AI 規則
+繁體中文；每次提供一個操作階段，可集中同類設定；回覆33或截圖繼續。不得將舊手動流程當預設。只有自動化失敗且確認原因後才採必要人工補救。不得索取真實金鑰或操作原業主專案。
+## 限制
+10分鐘為帳號及授權備妥後的目標，尚未實測。自動安裝器尚未完成真實客戶驗收；Threads 預覽只檢查設定，IG 海巡唯讀。Meta 訂閱及真實回覆待驗收，NO_GO。
