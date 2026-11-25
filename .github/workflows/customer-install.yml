@@ -1,0 +1,37 @@
+name: Customer quick install (NO_GO)
+on:
+  workflow_dispatch:
+    inputs:
+      project_ref:
+        description: Customer's new Supabase project reference
+        required: true
+        type: string
+      confirm:
+        description: Confirm fresh customer project (repeat project reference)
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: customer-install
+  cancel-in-progress: false
+jobs:
+  install:
+    if: github.event.repository.private == true && github.repository != 'a0923514137/AI-Social-Marketing'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: customer-install
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.122.0
+      - name: Install database client
+        run: sudo apt-get update -qq && sudo apt-get install -y postgresql-client
+      - name: Initialize and deploy (sending disabled)
+        env:
+          SUPABASE_PROJECT_REF: ${{ inputs.project_ref }}
+          CONFIRM_NEW_PROJECT: ${{ inputs.confirm }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          CUSTOMER_DB_URL: ${{ secrets.CUSTOMER_DB_URL }}
+        run: bash scripts/quick-install.sh
