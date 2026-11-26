@@ -46,8 +46,34 @@ Deno.serve(async(req)=>{
  const norm=(s:string)=>s.normalize("NFKC").toLocaleLowerCase().trim();
  const headers={apikey:service,Authorization:"Bearer "+service,"Content-Type":"application/json"};
  const token=Deno.env.get(platform==="instagram"?"INSTAGRAM_ACCESS_TOKEN":"FB_PAGE_ACCESS_TOKEN")||"";
- let enabled=false;
- if(token&&service&&base){try{const r=await fetch(base+"/rest/v1/r54_reply_controls?platform=eq."+platform+"&select=send_enabled",{headers,signal:AbortSignal.timeout(5000)});enabled=Deno.env.get("SOCIAL_SEND_ENABLED")==="true"&&r.ok&&(await r.json())[0]?.send_enabled===true}catch{}}
+ let enabled = false;
+let replyBaselineAt = NaN;
+
+if (token && service && base) {
+  try {
+    const r = await fetch(
+      base + "/rest/v1/r54_reply_controls?platform=eq." +
+      platform + "&select=send_enabled,reply_baseline_at",
+      { headers, signal: AbortSignal.timeout(5000) }
+    );
+
+    if (r.ok) {
+      const control = (await r.json())[0];
+
+      replyBaselineAt = Date.parse(
+        control?.reply_baseline_at || ""
+      );
+
+      enabled =
+        Deno.env.get("SOCIAL_SEND_ENABLED") === "true" &&
+        control?.send_enabled === true &&
+        Number.isFinite(replyBaselineAt) &&
+        replyBaselineAt <= Date.now();
+    }
+  } catch {
+    enabled = false;
+  }
+}
  const seen=new Set<string>();let matched=0,sent=0;
  for(const c of comments){
    const id=String(c.comment_id||""),author=String(c.from?.id||""),message=String(c.message||"");
@@ -56,7 +82,35 @@ Deno.serve(async(req)=>{
    const match=templates.filter((t:any)=>norm(String(t.keyword||""))&&norm(message).includes(norm(String(t.keyword||"")))).sort((a:any,b:any)=>String(b.keyword).length-String(a.keyword).length)[0];
    if(!match)continue;
  matched++;
- if(!enabled)continue;
+ if (!enabled) continue;
+
+// Historical comment safety guard.
+let commentCreatedAt = NaN;
+
+if (platform === "facebook") {
+  const createdTime = c.created_time;
+
+  if (
+    typeof createdTime === "number" &&
+    Number.isSafeInteger(createdTime) &&
+    createdTime > 0
+  ) {
+    commentCreatedAt = createdTime * 1000;
+  }
+}
+
+if (
+  !Number.isFinite(commentCreatedAt) ||
+  commentCreatedAt < replyBaselineAt ||
+  commentCreatedAt > Date.now()
+) {
+  console.log(JSON.stringify({
+    event: "reply_baseline_blocked",
+    platform,
+    comment_id: id
+  }));
+  continue;
+}
  if(platform==="instagram"&&(!/^\d+$/.test(id)||!/^\d+$/.test(String(c.post_id||""))||c.parent_id||String(c.username||"").toLowerCase()===igUsername||(c.self_id&&String(c.self_id)===author)))continue;
  if(platform==="facebook"&&(!/^\d+(_\d+)?$/.test(id)||!new RegExp("^"+fbId+"_\\d+$").test(String(c.post_id||""))||(c.parent_id&&String(c.parent_id)!==String(c.post_id))))continue;
  const endpoint=base+"/rest/v1/r54_reply_claims";

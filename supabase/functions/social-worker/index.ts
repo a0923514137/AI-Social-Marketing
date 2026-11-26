@@ -1,3 +1,145 @@
 import scan from "./threads_scan.ts";
 import patrol from "./threads_patrol.ts";
-Deno.serve(async req=>{if(req.method!=="POST")return new Response("method",{status:405});const key=Deno.env.get("SOCIAL_SCHEDULER_KEY")||"";if(key.length<32||req.headers.get("x-social-scheduler-key")!==key)return new Response("unauthorized",{status:401});let x;try{x=await req.json()}catch{return new Response("invalid_json",{status:400})}const handler=x.task==="threads_scan"?scan:x.task==="threads_patrol"?patrol:null;if(!handler)return new Response("unknown_task",{status:400});return handler(new Request(req.url,{method:"POST",headers:req.headers,body:JSON.stringify({mode:x.mode||"preview"})}));});
+
+const json = (data: unknown, status = 200) =>
+  new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "content-type": "application/json"
+    }
+  });
+
+export async function handleRequest(
+  req: Request
+): Promise<Response> {
+  if (req.method !== "POST") {
+    return json({error: "method_not_allowed"}, 405);
+  }
+
+  const key = Deno.env.get("SOCIAL_SCHEDULER_KEY") || "";
+
+  if (
+    key.length < 32 ||
+    req.headers.get("x-social-scheduler-key") !== key
+  ) {
+    return json({error: "unauthorized"}, 401);
+  }
+
+  const maxBytes = 4096;
+  const reader = req.body?.getReader();
+
+  if (!reader) {
+    return json({error: "invalid_json"}, 400);
+  }
+
+let raw = "";
+let totalBytes = 0;
+const decoder = new TextDecoder();
+
+const readTimeoutMs = 5000;
+let timedOut = false;
+
+const timer = setTimeout(() => {
+  timedOut = true;
+  void reader.cancel().catch(() => {});
+}, readTimeoutMs);
+
+try {
+  while (true) {
+    const {done, value} = await reader.read();
+
+    if (timedOut) {
+      return json({error: "request_timeout"}, 408);
+    }
+
+    if (done) break;
+
+    totalBytes += value.byteLength;
+
+    if (totalBytes > maxBytes) {
+      void reader.cancel().catch(() => {});
+      return json({error: "payload_too_large"}, 413);
+    }
+
+    raw += decoder.decode(value, {stream: true});
+  }
+
+  raw += decoder.decode();
+} catch {
+  if (timedOut) {
+    return json({error: "request_timeout"}, 408);
+  }
+
+  return json({error: "invalid_body"}, 400);
+} finally {
+  clearTimeout(timer);
+  reader.releaseLock();
+}
+
+  let input: unknown;
+
+  try {
+    input = JSON.parse(raw);
+  } catch {
+    return json({error: "invalid_json"}, 400);
+  }
+
+  if (
+    input === null ||
+    typeof input !== "object" ||
+    Array.isArray(input)
+  ) {
+    return json({error: "invalid_payload"}, 400);
+  }
+
+  const x = input as Record<string, unknown>;
+
+  const task = x.task;
+  const mode = x.mode === undefined
+    ? "preview"
+    : x.mode;
+
+  if (
+    task !== "threads_scan" &&
+    task !== "threads_patrol"
+  ) {
+    return json({error: "unknown_task"}, 400);
+  }
+
+  const allowedModes = task === "threads_scan"
+    ? ["preview", "scan"]
+    : ["preview", "scan_preview", "run_preview", "run"];
+
+  if (
+    typeof mode !== "string" ||
+    !allowedModes.includes(mode)
+  ) {
+    return json({error: "invalid_mode"}, 400);
+  }
+
+  const handler = task === "threads_scan"
+    ? scan
+    : patrol;
+
+  try {
+    return await handler(
+      new Request(req.url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-social-scheduler-key": key
+        },
+        body: JSON.stringify({mode})
+      })
+    );
+  } catch {
+    return json({
+      error: "worker_execution_failed",
+      delivery: "unknown"
+    }, 502);
+  }
+}
+
+if (import.meta.main) {
+  Deno.serve(handleRequest);
+}

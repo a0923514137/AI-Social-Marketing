@@ -1,6 +1,8 @@
 name: Customer template validation
 on:
   workflow_dispatch:
+  push:
+    branches: [r101-template-staging]
 permissions:
   contents: read
 jobs:
@@ -13,9 +15,9 @@ jobs:
           deno-version: v2.5.6
       - name: Check source
         run: |
-          deno check supabase/functions/meta-webhook/index.ts
-          deno check supabase/functions/social-worker/index.ts
-          deno check supabase/functions/instagram-patrol/index.ts
+          deno check supabase/functions/*/index.ts
+          deno test --allow-env supabase/functions
+          bash -n scripts/quick-install.sh && bash -n scripts/setup-schedule.sh
       - name: Check safe defaults
         run: |
           grep -qx 'SOCIAL_SEND_ENABLED=false' .env.example

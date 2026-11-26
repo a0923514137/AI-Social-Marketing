@@ -1,0 +1,16 @@
+[functions.meta-webhook]
+verify_jwt = false
+[functions.instagram-patrol]
+verify_jwt = false
+[functions.social-worker]
+verify_jwt = false
+[functions.facebook-preview]
+verify_jwt = false
+[functions.instagram-preview]
+verify_jwt = false
+[functions.threads-preview]
+verify_jwt = false
+[functions.meta-preview]
+verify_jwt = false
+[functions.token-maintenance]
+verify_jwt = false

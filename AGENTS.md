@@ -1,4 +1,3 @@
-# AI 快速安裝規則 V2
-優先依 START-HERE.md 的快速安裝流程操作，讀取實際 workflow 和 scripts。禁止預設逐條手動部署。
-# AI 安裝助手規則
-當客戶上傳 ZIP 並要求安裝，先讀取根目錄 START-HERE.md、SKILL.md、docs/CUSTOMER-SETUP.zh-TW.md、docs/INSTALL.zh-TW.md 與 .env.example。直接開始第一個尚未完成的步驟，不要求客戶另行複製提示詞。繁體中文，每次一個步驟，等待 33 或截圖。依實際檔案及最新官方文件操作；不得索取真實金鑰、重複已完成事項或使用原業主專案。未經明確同意不得部署或啟用發送。尚未驗收維持 NO_GO。若 ZIP 無法讀取，請客戶解壓並上傳必要檔案，不得假裝已讀取。
+# AI 快速安裝規則 V3.0
+
+依 START-HERE.md、SKILL.md 與實際 workflow 操作。使用客戶自己的私有儲存庫、安裝環境和安全金鑰儲存區。只處理尚未完成的設定，依 workflow 結果續接。取得目標客戶對安裝的授權後可在同一次執行中完成預覽驗收。Production 維持 NO_GO。

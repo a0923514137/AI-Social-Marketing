@@ -13,14 +13,45 @@ export default (async(req: Request)=>{
  const r=await fetch(base+"/rest/v1/"+path,{method,headers:{...headers,Prefer:prefer},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(6000)});
  return {ok:r.ok,status:r.status,rows:await r.json().catch(()=>[])};
  };
- const control=await db("r54_reply_controls?platform=eq.threads&select=send_enabled");
- if(!control.ok)return out({error:"control_unavailable"},502);
- const enabled=Deno.env.get("SOCIAL_SEND_ENABLED")==="true"&&control.rows[0]?.send_enabled===true;
- if(mode==="preview")return out({mode,configured:true,db_send_enabled:enabled,scan_supported:true,external_sends:0,production:"NO_GO"});
- if(!enabled)return out({error:"send_disabled",sent:0},403);
- const baseline=await db("rpc/threads_patrol_baseline","POST",{});
- const cutoff=typeof baseline.rows==="string"?Date.parse(baseline.rows):NaN;
- if(!baseline.ok||!Number.isFinite(cutoff)||cutoff>Date.now())return out({error:"baseline_unavailable",sent:0},503);
+ const control = await db(
+  "r54_reply_controls?platform=eq.threads&select=send_enabled,reply_baseline_at"
+);
+
+if (!control.ok)
+  return out({error:"control_unavailable"},502);
+
+const settings = control.rows[0];
+
+const cutoff =
+  typeof settings?.reply_baseline_at === "string"
+    ? Date.parse(settings.reply_baseline_at)
+    : NaN;
+
+const baselineReady =
+  Number.isFinite(cutoff) && cutoff <= Date.now();
+
+const enabled =
+  Deno.env.get("SOCIAL_SEND_ENABLED") === "true" &&
+  settings?.send_enabled === true &&
+  baselineReady;
+
+if (mode === "preview")
+  return out({
+    mode,
+    configured:true,
+    db_send_enabled:settings?.send_enabled === true,
+    baseline_ready:baselineReady,
+    effective_send_enabled:enabled,
+    scan_supported:true,
+    external_sends:0,
+    production:"NO_GO"
+  });
+
+if (!baselineReady)
+  return out({error:"baseline_unavailable",sent:0},503);
+
+if (!enabled)
+  return out({error:"send_disabled",sent:0},403);
  const rules=await db("r54_reply_templates?platform=eq.threads&select=keyword,reply_text");
  if(!rules.ok)return out({error:"rules_unavailable"},502);
  const norm=(v:string)=>v.normalize("NFKC").trim().toLowerCase();

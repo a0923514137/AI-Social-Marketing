@@ -1,0 +1,62 @@
+const schedulerRole=(req:Request)=>{const key=Deno.env.get("SOCIAL_SCHEDULER_KEY")||"";return key.length>=32&&req.headers.get("x-social-scheduler-key")===key};
+const json=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,headers:{"content-type":"application/json"}});
+const env=(k:string)=>Deno.env.get(k)?.trim()||"";
+Deno.serve(async(req: Request)=>{
+ if(req.method!=="POST")return json({error:"method_not_allowed"},405);
+ const key=env("THREADS_PATROL_ADMIN_KEY");
+ const schedulerAuth=schedulerRole(req);
+ if(!schedulerAuth)return json({error:"unauthorized"},401);
+ let input:{mode?:string};try{input=await req.json()}catch{return json({error:"invalid_json"},400)}
+
+ if(input.mode==="scan_preview"){
+ const token=env("THREADS_ACCESS_TOKEN");
+ if(!token)return json({error:"threads_token_missing",writes:0,sent:0},503);
+ const service=env("SUPABASE_SERVICE_ROLE_KEY"),url=env("SUPABASE_URL");
+ if(!service||!url)return json({error:"db_secrets_missing",writes:0,sent:0},503);
+ const rpc=async()=>{const r=await fetch(url+"/rest/v1/rpc/threads_patrol_baseline",{method:"POST",headers:{apikey:service,Authorization:"Bearer "+service,"content-type":"application/json"},body:"{}"});if(!r.ok)throw Error("baseline_http_"+r.status);return r.json()};
+ const get=async(path:string)=>{const target=path.startsWith("https://graph.threads.net/v1.0/")?path:"https://graph.threads.net/v1.0/"+path;if(!target.startsWith("https://graph.threads.net/v1.0/"))throw Error("unexpected_paging_url");const r=await fetch(target,{headers:{Authorization:"Bearer "+token},signal:AbortSignal.timeout(4500)});if(!r.ok)throw Error("threads_http_"+r.status);return r.json()};
+ try{
+  const baseline=await rpc();if(!baseline||!Number.isFinite(Date.parse(baseline)))return json({error:"baseline_missing",writes:0,sent:0},403);
+  const me=await get("me?fields=id,username");
+  const started=Date.now(),maxMs=18000;let next="me/threads?fields=id,timestamp&limit=10",postsScanned=0,repliesScanned=0,newer=0,postPages=0,replyPages=0,partial=false;
+  const seenPosts=new Set<string>(),seenReplies=new Set<string>();
+  while(next&&postPages<2&&Date.now()-started<maxMs){
+   const page=await get(next);postPages++;
+   for(const post of page.data||[]){if(Date.now()-started>=maxMs){partial=true;break;}
+    if(!post.id||seenPosts.has(String(post.id)))continue;seenPosts.add(String(post.id));postsScanned++;
+    let rn=encodeURIComponent(String(post.id))+"/replies?fields=id,username,timestamp&limit=50",n=0;
+    while(rn&&n<2&&Date.now()-started<maxMs){
+     const rp=await get(rn);n++;replyPages++;
+     for(const item of rp.data||[]){
+      if(!item.id||seenReplies.has(String(item.id)))continue;seenReplies.add(String(item.id));
+      if(!item.username||String(item.username).toLowerCase()===String(me.username||"").toLowerCase())continue;
+     repliesScanned++;
+
+const itemCreatedAt =
+  typeof item.timestamp === "string"
+    ? Date.parse(item.timestamp)
+    : NaN;
+
+const baselineAt = Date.parse(baseline);
+
+if (
+  Number.isFinite(itemCreatedAt) &&
+  Number.isFinite(baselineAt) &&
+  baselineAt <= Date.now() &&
+  itemCreatedAt > baselineAt &&
+  itemCreatedAt <= Date.now()
+) {
+  newer++;
+}
+     }
+     rn=rp.paging?.next||"";
+    }
+    if(rn)partial=true;
+   }
+   next=page.paging?.next||"";
+  }
+  if(next)partial=true;
+  return json({mode:"scan_preview",posts_scanned:postsScanned,replies_scanned:repliesScanned,newer_than_baseline:newer,post_pages:postPages,reply_pages:replyPages,elapsed_ms:Date.now()-started,partial,writes:0,sent:0});
+ }catch(e){return json({error:String(e).slice(0,120),writes:0,sent:0},502)}
+ }
+  return json({error:"preview_only"},400); });

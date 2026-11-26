@@ -30,7 +30,24 @@ export default (async(req: Request)=>{
      for(const item of rp.data||[]){
       if(!item.id||seenReplies.has(String(item.id)))continue;seenReplies.add(String(item.id));
       if(!item.username||String(item.username).toLowerCase()===String(me.username||"").toLowerCase())continue;
-      repliesScanned++;if(item.timestamp&&Date.parse(item.timestamp)>Date.parse(baseline))newer++;
+     repliesScanned++;
+
+const itemCreatedAt =
+  typeof item.timestamp === "string"
+    ? Date.parse(item.timestamp)
+    : NaN;
+
+const baselineAt = Date.parse(baseline);
+
+if (
+  Number.isFinite(itemCreatedAt) &&
+  Number.isFinite(baselineAt) &&
+  baselineAt <= Date.now() &&
+  itemCreatedAt > baselineAt &&
+  itemCreatedAt <= Date.now()
+) {
+  newer++;
+}
      }
      rn=rp.paging?.next||"";
     }
@@ -63,7 +80,25 @@ export default (async(req: Request)=>{
    const rp=await get(rn);rpCount++;replyPages++;
    for(const reply of rp.data||[]){
     if(!reply.id||seenReplies.has(String(reply.id)))continue;seenReplies.add(String(reply.id));
-    if(!reply.timestamp||Date.parse(reply.timestamp)<=Date.parse(baseline)||!reply.username||String(reply.username).toLowerCase()===String(me.username||"").toLowerCase())continue;
+    const replyCreatedAt =
+  typeof reply.timestamp === "string"
+    ? Date.parse(reply.timestamp)
+    : NaN;
+
+const baselineAt = Date.parse(baseline);
+
+if (
+  !Number.isFinite(replyCreatedAt) ||
+  !Number.isFinite(baselineAt) ||
+  baselineAt > Date.now() ||
+  replyCreatedAt <= baselineAt ||
+  replyCreatedAt > Date.now() ||
+  !reply.username ||
+  String(reply.username).toLowerCase() ===
+    String(me.username || "").toLowerCase()
+) {
+  continue;
+}
     found++;
     if(!dry&&await rpc("threads_patrol_enqueue",{p_reply_id:String(reply.id),p_post_id:String(post.id),p_username:String(reply.username),p_body:String(reply.text||""),p_created_at:reply.timestamp}))queued++;
    }
@@ -77,9 +112,62 @@ export default (async(req: Request)=>{
  if(!dry){
  const claimed=await rpc("threads_patrol_claim",{p_limit:10});
  for(const item of claimed){
- let ok=false,err="";
- try{const rr=await fetch("https://api.telegram.org/bot"+tg+"/sendMessage",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({chat_id:chat,text:"Threads 新留言\n@"+item.username+"\n"+String(item.body||"").slice(0,1200)}),signal:AbortSignal.timeout(5000)});const d=await rr.json();ok=rr.ok&&d.ok===true;if(!ok)err="telegram_"+rr.status}catch{err="telegram_network"}
- await rpc("threads_patrol_finish",{p_reply_id:item.reply_id,p_lease_id:item.lease_id,p_success:ok,p_error:ok?null:err});if(ok)sent++;else failed++;
+ let ok = false;
+let err = "delivery_unknown";
+
+try {
+  const rr = await fetch(
+    "https://api.telegram.org/bot" + tg + "/sendMessage",
+    {
+      method: "POST",
+      headers: {"content-type":"application/json"},
+      body: JSON.stringify({
+        chat_id: chat,
+        text: "Threads 新留言\n@" +
+          item.username + "\n" +
+          String(item.body || "").slice(0,1200)
+      }),
+      signal: AbortSignal.timeout(5000)
+    }
+  );
+
+  const d = await rr.json();
+
+  ok = rr.ok && d.ok === true;
+
+  if (!ok) {
+    err = "telegram_" + rr.status;
+  }
+} catch {
+  err = "telegram_delivery_unknown";
+}
+
+if (ok) {
+  const recorded = await rpc("threads_patrol_finish", {
+    p_reply_id: item.reply_id,
+    p_lease_id: item.lease_id,
+    p_success: true,
+    p_error: null
+  });
+
+  if (recorded !== true) {
+    throw Error("telegram_sent_but_record_failed");
+  }
+
+  sent++;
+} else {
+  const recorded = await rpc("threads_patrol_uncertain", {
+    p_reply_id: item.reply_id,
+    p_lease_id: item.lease_id,
+    p_error: err
+  });
+
+  if (recorded !== true) {
+    throw Error("uncertain_record_failed");
+  }
+
+  failed++;
+}
  }
  }
  return json({mode:input.mode,posts_scanned:posts,post_pages:postPages,reply_pages:replyPages,found,queued,sent,failed,partial,writes:dry?0:queued,elapsed_ms:Date.now()-started});
