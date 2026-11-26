@@ -1,5 +1,5 @@
 const reply=(x:unknown,s=200)=>new Response(JSON.stringify(x),{status:s,headers:{"content-type":"application/json"}});
-export default (async req=>{
+export default (async (req: Request): Promise<Response> => {
  if(req.method!=="POST")return reply({error:"method_not_allowed"},405);
  const bearer=(req.headers.get("authorization")||"").replace(/^Bearer /,"");
  const service=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")||"";
