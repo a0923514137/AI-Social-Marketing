@@ -53,53 +53,175 @@ function fixture(
     string,
     { items: ReturnType<typeof thread>[]; nextPageToken?: string }
   >,
-  { initialStatus = 200, hasBaseline = true, identity = channel } = {},
+  {
+    initialStatus = 200,
+    hasBaseline = true,
+    identity = channel,
+    sendEnabled = false,
+    databaseEnabled = undefined as boolean | undefined,
+    insert = "success",
+    failFinishOnce = false,
+    existingReply = false,
+    project = "eziafqttckcdvjxxvxsv.supabase.co",
+  } = {},
 ) {
   let refreshes = 0;
   let reads = 0;
+  let blocked = false;
+  let inserts = 0;
+  let finishFailed = false;
+  let remoteReply = existingReply;
+  let persistedBaseline: string;
+  let currentTime = now;
+  const claims = new Map<
+    string,
+    { state: string; reply_text: string; attempted_at: string }
+  >();
   const env: Record<string, string> = {
     YOUTUBE_CHANNEL_ID: channel,
-    SUPABASE_URL: "https://mock.invalid",
+    SUPABASE_URL: "https://" + project,
+    YOUTUBE_SEND_ENABLED: String(sendEnabled),
     SUPABASE_SERVICE_ROLE_KEY: "fixture",
     ...(hasBaseline ? { YOUTUBE_REPLY_BASELINE_AT: baseline } : {}),
     YOUTUBE_CLIENT_ID: "id",
     YOUTUBE_CLIENT_SECRET: "secret",
     YOUTUBE_REFRESH_TOKEN: "refresh",
   };
-  const preview = createYoutubePreview({
-    env: (key) => env[key],
-    clock: () => now,
-    request: (input, init) => {
-      const json = (data: unknown, options?: ResponseInit) =>
-        Promise.resolve(Response.json(data, options));
-      const url = new URL(String(input));
-      if (url.hostname === "oauth2.googleapis.com") {
-        equal(init?.method, "POST");
-        return json({
-          access_token: "token-" + ++refreshes,
-          expires_in: 3600,
-        });
-      }
-      equal(init?.method ?? "GET", "GET");
-      if (url.hostname === "mock.invalid") {
-        equal(url.searchParams.get("platform"), "eq.instagram");
-        return json(rules);
-      }
-      if (url.pathname.endsWith("/channels")) {
-        reads++;
-        if (reads === 1 && initialStatus !== 200) {
+  const newWorker = () =>
+    createYoutubePreview({
+      env: (key) => env[key],
+      clock: () => currentTime,
+      request: (input, init) => {
+        const json = (data: unknown, options?: ResponseInit) =>
+          Promise.resolve(Response.json(data, options));
+        const url = new URL(String(input));
+        if (url.hostname === "oauth2.googleapis.com") {
+          equal(init?.method, "POST");
           return json({
-            error: { errors: [{ reason: "quotaExceeded" }] },
-          }, { status: initialStatus });
+            access_token: "token-" + ++refreshes,
+            expires_in: 3600,
+          });
         }
-        return json({ items: [{ id: identity }] });
-      }
-      equal(url.pathname, "/youtube/v3/commentThreads");
-      equal(url.searchParams.get("allThreadsRelatedToChannelId"), channel);
-      return json(pages[url.searchParams.get("pageToken") ?? ""]);
+        if (url.hostname === project) {
+          const args = typeof init?.body === "string"
+            ? JSON.parse(init.body)
+            : {};
+          const operation = url.pathname.split("/").at(-1);
+          switch (operation) {
+            case "r130_youtube_setup":
+              persistedBaseline ??= args.p_baseline ??
+                new Date(currentTime).toISOString();
+              return json({
+                baseline_at: persistedBaseline,
+                send_enabled: databaseEnabled ?? sendEnabled,
+              });
+            case "r130_youtube_quota":
+              equal(init?.method, "PATCH");
+              blocked = args.blocked;
+              return Promise.resolve(new Response(null, { status: 204 }));
+            case "r130_youtube_reserve":
+              if (blocked) return json({ status: "quota" });
+              if (args.p_comment) {
+                if (claims.has(args.p_comment)) {
+                  return json({ status: "duplicate" });
+                }
+                claims.set(args.p_comment, {
+                  state: "sending",
+                  reply_text: args.p_text,
+                  attempted_at: new Date(now).toISOString(),
+                });
+              }
+              return json({
+                status: "reserved",
+                quota_day: "2026-11-26",
+                attempted_at: new Date(now).toISOString(),
+              });
+            case "r130_youtube_pending":
+              return json(
+                [...claims].filter(([, item]) =>
+                  ["sending", "uncertain"].includes(item.state)
+                )
+                  .map(([comment_id, item]) => ({ comment_id, ...item })),
+              );
+            case "r130_youtube_known":
+              return json([...claims.keys()]);
+            case "r130_youtube_finish": {
+              if (failFinishOnce && !finishFailed) {
+                finishFailed = true;
+                return json({}, { status: 503 });
+              }
+              const claim = claims.get(args.p_comment);
+              if (!claim) throw new Error("Missing claim");
+              claim.state = args.p_state;
+              if (args.p_state === "sent") equal(args.p_response, "reply-id");
+              return json(true);
+            }
+          }
+          equal(operation, "r54_reply_templates");
+          equal(url.searchParams.get("platform"), "eq.instagram");
+          return json(rules);
+        }
+        if (url.pathname.endsWith("/comments")) {
+          if (init?.method === "POST") {
+            inserts++;
+            equal(url.searchParams.get("part"), "snippet");
+            equal(JSON.parse(String(init.body)), {
+              snippet: { parentId: "new", textOriginal: "AI reply" },
+            });
+            if (insert === "rejected") return json({}, { status: 400 });
+            if (
+              insert === "success" || insert === "timeout_after_commit"
+            ) remoteReply = true;
+            if (insert.startsWith("timeout")) {
+              return Promise.reject(
+                new DOMException("timeout", "TimeoutError"),
+              );
+            }
+            return json({ id: "reply-id" });
+          }
+          equal(url.searchParams.get("parentId"), "new");
+          return json({
+            items: remoteReply
+              ? [{
+                id: "reply-id",
+                snippet: {
+                  authorChannelId: { value: channel },
+                  publishedAt: new Date(now).toISOString(),
+                  textOriginal: "AI reply",
+                },
+              }]
+              : [],
+          });
+        }
+        equal(init?.method ?? "GET", "GET");
+        if (url.pathname.endsWith("/channels")) {
+          reads++;
+          if (reads === 1 && initialStatus !== 200) {
+            return json({
+              error: { errors: [{ reason: "quotaExceeded" }] },
+            }, { status: initialStatus });
+          }
+          return json({ items: [{ id: identity }] });
+        }
+        equal(url.pathname, "/youtube/v3/commentThreads");
+        equal(url.searchParams.get("allThreadsRelatedToChannelId"), channel);
+        return json(pages[url.searchParams.get("pageToken") ?? ""]);
+      },
+    });
+  return {
+    preview: newWorker(),
+    newWorker,
+    refreshes: () => refreshes,
+    reads: () => reads,
+    inserts: () => inserts,
+    setReply: () => {
+      remoteReply = true;
     },
-  });
-  return { preview, refreshes: () => refreshes, reads: () => reads };
+    setTime: (value: number) => {
+      currentTime = value;
+    },
+    state: () => claims.get("new")?.state,
+  };
 }
 
 Deno.test("YouTube preview shares four triggers and filters historical, self and duplicate comments across pages", async () => {
@@ -191,9 +313,10 @@ Deno.test("YouTube stops reads on daily quota exhaustion and rejects an OAuth ch
   );
 });
 
-Deno.test("Social worker rejects YouTube run mode before calling the adapter", async () => {
+Deno.test("Social worker disables YouTube run by default", async () => {
   const key = "test-only-scheduler-key-1234567890";
   Deno.env.set("SOCIAL_SCHEDULER_KEY", key);
+  Deno.env.delete("YOUTUBE_SEND_ENABLED");
   const response = await handleRequest(
     new Request("http://localhost/social-worker", {
       method: "POST",
@@ -201,6 +324,111 @@ Deno.test("Social worker rejects YouTube run mode before calling the adapter", a
       body: JSON.stringify({ task: "youtube_poll", mode: "run" }),
     }),
   );
-  equal(response.status, 400);
-  equal(await response.json(), { error: "invalid_mode" });
+  equal(response.status, 403);
+  equal(await response.json(), {
+    error: "youtube_send_disabled",
+    sends: 0,
+    production: "NO_GO",
+  });
+});
+
+const newComment = { "": { items: [thread("new", "AI")] } };
+
+Deno.test("YouTube two workers post a claimed comment exactly once", async () => {
+  const mock = fixture(newComment, { sendEnabled: true });
+  const results = await Promise.all([
+    mock.preview("run"),
+    mock.newWorker()("run"),
+  ]);
+  equal(results.reduce((sum, result) => sum + result.sends, 0), 1);
+  equal(mock.inserts(), 1);
+  equal(mock.state(), "sent");
+  await mock.newWorker()("run");
+  equal(mock.inserts(), 1);
+});
+
+Deno.test("YouTube timeout after insert is confirmed by listing channel replies", async () => {
+  const mock = fixture(newComment, {
+    sendEnabled: true,
+    insert: "timeout_after_commit",
+  });
+  const result = await mock.preview("run");
+  equal([result.sends, result.reconciled, mock.state(), mock.inserts()], [
+    0,
+    1,
+    "sent",
+    1,
+  ]);
+});
+
+Deno.test("YouTube recovers after a successful post followed by a database write failure", async () => {
+  const mock = fixture(newComment, { sendEnabled: true, failFinishOnce: true });
+  equal(
+    await mock.preview("run").catch((error) => error.message),
+    "youtube_database_unavailable",
+  );
+  equal([mock.state(), mock.inserts()], ["sending", 1]);
+  equal((await mock.newWorker()("run")).reconciled, 1);
+  equal([mock.state(), mock.inserts()], ["sent", 1]);
+});
+
+Deno.test("YouTube unresolved timeout survives restart and is reconciled without reposting", async () => {
+  const mock = fixture(newComment, {
+    sendEnabled: true,
+    insert: "timeout_before_commit",
+  });
+  await mock.preview("run");
+  equal(mock.state(), "uncertain");
+  await mock.newWorker()("run");
+  equal([mock.state(), mock.inserts()], ["uncertain", 1]);
+  mock.setReply();
+  equal((await mock.newWorker()("run")).reconciled, 1);
+  equal([mock.state(), mock.inserts()], ["sent", 1]);
+});
+
+Deno.test("YouTube definitive rejection and existing replies are never reposted", async () => {
+  const rejected = fixture(newComment, {
+    sendEnabled: true,
+    insert: "rejected",
+  });
+  await rejected.preview("run");
+  await rejected.newWorker()("run");
+  equal([rejected.state(), rejected.inserts()], ["rejected", 1]);
+  const existing = fixture(newComment, {
+    sendEnabled: true,
+    existingReply: true,
+  });
+  equal((await existing.preview("run")).delivery, { existing_reply: 1 });
+  equal(existing.inserts(), 0);
+});
+
+Deno.test("YouTube stays disabled outside Staging or with its database switch off", async () => {
+  for (
+    const options of [{ databaseEnabled: false }, {
+      project: "other.supabase.co",
+    }]
+  ) {
+    const mock = fixture(newComment, { sendEnabled: true, ...options });
+    equal(
+      await mock.preview("run").catch((error) => error.message),
+      "youtube_send_disabled",
+    );
+    equal([mock.reads(), mock.inserts()], [0, 0]);
+  }
+});
+
+Deno.test("YouTube default baseline is fixed across worker restarts", async () => {
+  const pages = {
+    "": {
+      items: [
+        thread("new", "AI", {
+          publishedAt: new Date(now + 1000).toISOString(),
+        }),
+      ],
+    },
+  };
+  const mock = fixture(pages, { hasBaseline: false });
+  equal((await mock.preview()).candidates.length, 0);
+  mock.setTime(now + 2000);
+  equal((await mock.newWorker()()).candidates.length, 1);
 });

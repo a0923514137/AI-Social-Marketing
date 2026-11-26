@@ -101,8 +101,8 @@ try {
     : x.mode;
 
   if (task === "youtube_poll") {
-    if (mode !== "preview") return json({error: "invalid_mode"}, 400);
-    return handleYoutubePreview();
+    if (mode !== "preview" && mode !== "run") return json({error: "invalid_mode"}, 400);
+    return handleYoutubePreview(mode);
   }
 
   if (

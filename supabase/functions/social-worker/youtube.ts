@@ -2,6 +2,7 @@ const api = "https://www.googleapis.com/youtube/v3/";
 export const dailyLimit = 150;
 export const pollIntervalMinutes = 5;
 const maxPages = 5;
+const stagingOrigin = "https://eziafqttckcdvjxxvxsv.supabase.co";
 const templateKeys = ["ep03_video_edit", "ep08_automation", "default_ai"];
 
 type Env = (key: string) => string | undefined;
@@ -12,6 +13,7 @@ type Comment = {
     authorChannelId?: { value?: string };
     publishedAt?: string;
     textDisplay?: string;
+    textOriginal?: string;
   };
 };
 type Thread = {
@@ -26,14 +28,12 @@ type Token = { access_token?: string; expires_in?: number };
 
 class PreviewError extends Error {}
 
-function pacificDate(now: number) {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Los_Angeles",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(now);
-}
+type Reservation = {
+  status: string;
+  quota_day?: string;
+  attempted_at?: string;
+};
+type Claim = { comment_id: string; reply_text: string; attempted_at: string };
 
 export function createYoutubePreview({
   env = (key: string) => Deno.env.get(key),
@@ -43,14 +43,54 @@ export function createYoutubePreview({
   let token = "";
   let expiresAt = 0;
   let refresh: Promise<string> | undefined;
-  let quotaDay = "";
-  let reads = 0;
-  let blocked = false;
 
   function required(key: string) {
     const value = env(key);
     if (!value) throw new PreviewError("missing_configuration");
     return value;
+  }
+
+  async function database<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const service = required("SUPABASE_SERVICE_ROLE_KEY");
+    const response = await request(
+      new URL("/rest/v1/" + path, required("SUPABASE_URL")),
+      {
+        ...init,
+        headers: {
+          apikey: service,
+          Authorization: "Bearer " + service,
+          "content-type": "application/json",
+        },
+        signal: AbortSignal.timeout(6000),
+      },
+    );
+    if (!response.ok) throw new PreviewError("youtube_database_unavailable");
+    return response.status === 204 ? undefined as T : response.json();
+  }
+
+  function rpc<T>(operation: string, args: Record<string, unknown>) {
+    return database<T>("rpc/r130_youtube_" + operation, {
+      method: "POST",
+      body: JSON.stringify(args),
+    });
+  }
+
+  function quotaExceeded(
+    body: { error?: { errors?: { reason?: string }[] } } | null,
+  ) {
+    return body?.error?.errors?.some(({ reason }) =>
+      reason === "quotaExceeded" || reason === "dailyLimitExceeded"
+    );
+  }
+
+  function blockQuota(day: string) {
+    return database(
+      "r130_youtube_quota?" + new URLSearchParams({ quota_day: "eq." + day }),
+      {
+        method: "PATCH",
+        body: JSON.stringify({ blocked: true }),
+      },
+    );
   }
 
   function accessToken() {
@@ -88,18 +128,13 @@ export function createYoutubePreview({
     params: Record<string, string>,
     retry = true,
   ): Promise<T> {
-    const day = pacificDate(clock());
-    if (day !== quotaDay) {
-      quotaDay = day;
-      reads = 0;
-      blocked = false;
-    }
     const access = await accessToken();
-    // A warm isolate limits its own preview reads. Google enforces the project-wide quota.
-    if (blocked || reads >= 2000) {
+    const reservation = await rpc<Reservation>("reserve", {
+      p_channel: required("YOUTUBE_CHANNEL_ID"),
+    });
+    if (reservation.status !== "reserved" || !reservation.quota_day) {
       throw new PreviewError("youtube_quota_exhausted");
     }
-    reads++;
     const response = await request(
       api + path + "?" + new URLSearchParams(params),
       {
@@ -116,12 +151,8 @@ export function createYoutubePreview({
       const reasons: string[] =
         body?.error?.errors?.map((item: { reason: string }) => item.reason) ??
           [];
-      if (
-        reasons.some((reason) =>
-          ["quotaExceeded", "dailyLimitExceeded"].includes(reason)
-        )
-      ) {
-        blocked = true;
+      if (quotaExceeded(body)) {
+        await blockQuota(reservation.quota_day);
         throw new PreviewError("youtube_quota_exhausted");
       }
       if (
@@ -161,22 +192,175 @@ export function createYoutubePreview({
     });
   }
 
-  return async function preview() {
-    const channel = required("YOUTUBE_CHANNEL_ID");
-    const now = clock();
-    // A missing baseline makes every existing comment historical.
-    const baseline = Date.parse(
-      env("YOUTUBE_REPLY_BASELINE_AT") ?? new Date(now).toISOString(),
-    );
-    if (!Number.isFinite(baseline) || baseline > now) {
-      throw new PreviewError("invalid_baseline");
+  function finish(
+    channel: string,
+    comment: string,
+    state: string,
+    response?: string,
+  ) {
+    return rpc<boolean>("finish", {
+      p_channel: channel,
+      p_comment: comment,
+      p_state: state,
+      p_response: response ?? null,
+    });
+  }
+
+  async function replies(
+    parentId: string,
+    match: (comment: Comment) => boolean,
+  ) {
+    let pageToken = "";
+    for (let page = 0; page < 5; page++) {
+      const result = await read<Page<Comment>>("comments", {
+        part: "snippet",
+        parentId,
+        maxResults: "100",
+        textFormat: "plainText",
+        ...(pageToken ? { pageToken } : {}),
+      });
+      if (!Array.isArray(result.items)) {
+        throw new PreviewError("youtube_invalid_response");
+      }
+      const found = result.items.find(match);
+      if (found) return found;
+      pageToken = result.nextPageToken ?? "";
+      if (!pageToken) return undefined;
     }
+    throw new PreviewError("youtube_reply_check_partial");
+  }
+
+  async function reconcile(channel: string, claim: Claim) {
+    const match = await replies(
+      claim.comment_id,
+      (comment) =>
+        !!comment.id && comment.snippet?.authorChannelId?.value === channel &&
+        comment.snippet.textOriginal === claim.reply_text &&
+        Date.parse(comment.snippet.publishedAt ?? "") >=
+          Date.parse(claim.attempted_at) - 5000,
+    );
+    if (!match?.id) {
+      await finish(channel, claim.comment_id, "uncertain");
+      return false;
+    }
+    return finish(channel, claim.comment_id, "sent", match.id);
+  }
+
+  async function deliver(
+    channel: string,
+    candidate: {
+      comment_id: string;
+      reply_text: string;
+      author: string;
+      published_at: string;
+    },
+  ) {
+    if (await replies(candidate.comment_id, () => true)) {
+      return "existing_reply";
+    }
+    const access = await accessToken();
+    const claim = await rpc<Reservation>("reserve", {
+      p_channel: channel,
+      p_comment: candidate.comment_id,
+      p_author: candidate.author,
+      p_published: candidate.published_at,
+      p_text: candidate.reply_text,
+    });
+    if (claim.status !== "reserved") return claim.status;
+    if (!claim.quota_day || !claim.attempted_at) {
+      throw new PreviewError("youtube_invalid_reservation");
+    }
+    // Keep the POST within the database reservation's Pacific day.
+    if (!(Math.abs(clock() - Date.parse(claim.attempted_at)) < 10000)) {
+      await finish(channel, candidate.comment_id, "rejected");
+      return "reservation_expired";
+    }
+
+    let response: Response | undefined;
+    try {
+      response = await request(api + "comments?part=snippet", {
+        method: "POST",
+        redirect: "error",
+        headers: {
+          Authorization: "Bearer " + access,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          snippet: {
+            parentId: candidate.comment_id,
+            textOriginal: candidate.reply_text,
+          },
+        }),
+        signal: AbortSignal.timeout(6000),
+      });
+    } catch {
+      // The server may have accepted the request before the connection failed.
+    }
+    const body = await response?.json().catch(() => null);
+    if (response?.ok && typeof body?.id === "string" && body.id) {
+      await finish(channel, candidate.comment_id, "sent", body.id);
+      return "sent";
+    }
+    if (response && [400, 401, 403, 404, 429].includes(response.status)) {
+      const blocked = quotaExceeded(body);
+      if (blocked) await blockQuota(claim.quota_day);
+      if (response.status === 401 && token === access) expiresAt = 0;
+      await finish(channel, candidate.comment_id, "rejected");
+      return blocked ? "quota" : "rejected";
+    }
+    await finish(channel, candidate.comment_id, "uncertain");
+    const confirmed = await reconcile(channel, {
+      ...candidate,
+      attempted_at: claim.attempted_at,
+    });
+    return confirmed ? "reconciled" : "uncertain";
+  }
+
+  return async function poll(mode: "preview" | "run" = "preview") {
+    if (
+      mode === "run" && (env("YOUTUBE_SEND_ENABLED") !== "true" ||
+        new URL(required("SUPABASE_URL")).origin !== stagingOrigin)
+    ) {
+      throw new PreviewError("youtube_send_disabled");
+    }
+    const channel = required("YOUTUBE_CHANNEL_ID");
+    const settings = await rpc<{ baseline_at: string; send_enabled: boolean }>(
+      "setup",
+      {
+        p_channel: channel,
+        p_baseline: env("YOUTUBE_REPLY_BASELINE_AT") ?? null,
+      },
+    );
+    if (mode === "run" && !settings.send_enabled) {
+      throw new PreviewError("youtube_send_disabled");
+    }
+    const baseline = Date.parse(settings.baseline_at);
+    if (!Number.isFinite(baseline)) throw new PreviewError("invalid_baseline");
+    const now = clock();
     const identity = await read<Page<{ id?: string }>>("channels", {
       part: "id",
       mine: "true",
     });
     if (identity.items?.length !== 1 || identity.items[0].id !== channel) {
       throw new PreviewError("youtube_channel_mismatch");
+    }
+    let reconciled = 0;
+    let recoveryErrors = 0;
+    if (mode === "run") {
+      const pending = await rpc<Claim[]>("pending", { p_channel: channel });
+      for (const claim of pending) {
+        try {
+          if (await reconcile(channel, claim)) reconciled++;
+        } catch (error) {
+          if (
+            !(error instanceof PreviewError) ||
+            !["youtube_read_failed", "youtube_reply_check_partial"].includes(
+              error.message,
+            )
+          ) throw error;
+          recoveryErrors++;
+        }
+      }
     }
     const rules = await templates();
     const normalize = (text: string) =>
@@ -186,6 +370,8 @@ export function createYoutubePreview({
       comment_id: string;
       template_key: string;
       reply_text: string;
+      author: string;
+      published_at: string;
     }[] = [];
     const skipped = {
       historical: 0,
@@ -256,7 +442,7 @@ export function createYoutubePreview({
           skipped.duplicate++;
           continue;
         }
-        if (candidates.length >= dailyLimit) {
+        if (mode === "preview" && candidates.length >= dailyLimit) {
           skipped.limit++;
           continue;
         }
@@ -264,32 +450,85 @@ export function createYoutubePreview({
           comment_id: id,
           template_key: rule.template_key,
           reply_text: rule.reply_text,
+          author,
+          published_at: new Date(published).toISOString(),
         });
       }
     } while (pageToken && pages < maxPages);
+    let sends = 0;
+    const delivery: Record<string, number> = {};
+    if (mode === "run" && candidates.length) {
+      const known = new Set(
+        await rpc<string[]>("known", {
+          p_channel: channel,
+          p_comments: candidates.map(({ comment_id }) => comment_id),
+        }),
+      );
+      for (
+        const candidate of candidates.filter(({ comment_id }) =>
+          !known.has(comment_id)
+        ).reverse().slice(0, 10)
+      ) {
+        let result: string;
+        try {
+          result = await deliver(channel, candidate);
+        } catch (error) {
+          if (
+            !(error instanceof PreviewError) ||
+            !["youtube_read_failed", "youtube_reply_check_partial"].includes(
+              error.message,
+            )
+          ) throw error;
+          result = "reply_check_failed";
+        }
+        delivery[result] = (delivery[result] ?? 0) + 1;
+        if (result === "sent") sends++;
+        if (result === "reconciled") reconciled++;
+        if (
+          ["quota", "daily_limit", "disabled", "day_rollover"].includes(result)
+        ) break;
+      }
+    }
     return {
       status: pageToken ? "partial" : "pass",
       checked,
       skipped,
-      candidates,
+      candidates: mode === "preview"
+        ? candidates.map(({ comment_id, template_key, reply_text }) => ({
+          comment_id,
+          template_key,
+          reply_text,
+        }))
+        : [],
       daily_reply_limit: dailyLimit,
       poll_interval_minutes: pollIntervalMinutes,
-      sends: 0,
+      sends,
+      reconciled,
+      recovery_errors: recoveryErrors,
+      delivery,
       production: "NO_GO",
     };
   };
 }
 
 const preview = createYoutubePreview();
-export async function handleYoutubePreview() {
+export async function handleYoutubePreview(mode: "preview" | "run") {
   try {
-    return Response.json(await preview());
+    return Response.json(await preview(mode));
   } catch (error) {
     const code = error instanceof PreviewError
       ? error.message
       : "youtube_preview_failed";
-    return Response.json({ error: code, sends: 0, production: "NO_GO" }, {
-      status: /quota_exhausted|rate_limited/.test(code) ? 429 : 502,
+    return Response.json({
+      error: code,
+      sends: mode === "preview" || code === "youtube_send_disabled" ? 0 : null,
+      production: "NO_GO",
+    }, {
+      status: code === "youtube_send_disabled"
+        ? 403
+        : /quota_exhausted|rate_limited/.test(code)
+        ? 429
+        : 502,
     });
   }
 }
