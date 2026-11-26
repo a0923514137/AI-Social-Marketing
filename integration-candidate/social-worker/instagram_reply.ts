@@ -1,5 +1,5 @@
 const out=(x:unknown,s=200)=>new Response(JSON.stringify(x),{status:s,headers:{"content-type":"application/json"}});
-export default (async req=>{
+export default (async (req: Request): Promise<Response> => {
  if(req.method!=="POST")return out({error:"method"},405);
  let role="";try{const t=(req.headers.get("authorization")||"").split(" ")[1];role=JSON.parse(atob(t.split(".")[1].replace(/-/g,"+").replace(/_/g,"/"))).role}catch{}
  if(req.headers.get("authorization")!=="Bearer "+Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")||!Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))return out({error:"unauthorized"},401);
