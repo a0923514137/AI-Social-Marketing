@@ -1,3 +1,4 @@
+import {parseCommand,MENU} from "./commands.ts";
 import {handleReview} from "./review.ts";
 const j=(x:unknown,s=200)=>new Response(JSON.stringify(x),{status:s,headers:{"content-type":"application/json"}});
 export async function handleAdmin(req: Request): Promise<Response> {
@@ -15,6 +16,11 @@ export async function handleAdmin(req: Request): Promise<Response> {
  const chatId=String(cb?.message?.chat?.id||msg?.chat?.id||"");
  if(sender!==owner||chatId!==chat)return j({ignored:true});
  if(!Number.isSafeInteger(u?.update_id))return j({error:"invalid_update"},400);
+ if(!cb && typeof msg?.text==="string"){
+ const command=parseCommand(msg.text);
+ if(command.action==="menu"||command.action==="invalid")return j({accepted:true,preview_only:true,message:MENU});
+ if(command.action!=="other")return j({accepted:true,preview_only:true,action:command.action,writes:0});
+ }
  const data=String(cb?.data||"");
  const match=/^r53:(approve|edit|regenerate|cancel):([0-9a-f-]{36})$/i.exec(data);
  if(cb&&!match)return j({ignored:true});
