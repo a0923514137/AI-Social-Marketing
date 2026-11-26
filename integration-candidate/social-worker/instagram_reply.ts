@@ -31,8 +31,23 @@ export default (async (req: Request): Promise<Response> => {
  const rule=tpl.data.find((r:any)=>String(r.post_id)===String(m.id)&&typeof r.keyword==="string"&&r.keyword.trim()&&typeof r.reply_text==="string"&&r.reply_text.trim()&&String(c.text||"").toLowerCase().includes(r.keyword.toLowerCase()));
  if(!rule)continue;
  matches++;
- // Candidate is read-only: no claims or Graph POST.
- skipped++;
+ // Live delivery remains unreachable from the preview-only worker router.
+ if (!enabled || Deno.env.get("SOCIAL_IG_SEND_ENABLED") !== "true" || req.headers.get("x-internal-delivery-mode") !== "run") { skipped++; continue; }
+ const claim=await rest("r54_reply_claims?on_conflict=platform,comment_id","POST",{platform:"instagram",comment_id:c.id,post_id:m.id,rule_id:rule.id,state:"reserved"},"resolution=ignore-duplicates,return=representation");
+ if(!claim.ok){failed++;continue}
+ if(!Array.isArray(claim.data)||claim.data.length!==1){skipped++;continue}
+ const path="r54_reply_claims?platform=eq.instagram&comment_id=eq."+encodeURIComponent(c.id);
+ const mark=await rest(path+"&state=eq.reserved","PATCH",{state:"sending",updated_at:new Date().toISOString()},"return=representation");
+ if(!mark.ok||!Array.isArray(mark.data)||mark.data.length!==1){failed++;continue}
+ let state="uncertain",responseId=null,errorCode="network_unknown";
+ try{
+ const result=await graph(c.id+"/replies",new URLSearchParams({message:rule.reply_text}));
+ if(result.ok&&result.data?.id){state="sent";responseId=result.data.id;errorCode="";}
+ else if(!result.ok&&result.status>=400&&result.status<500&&result.status!==408&&result.status!==429){state="failed";errorCode=String(result.status);}
+ }catch{/* Do not retry ambiguous delivery. */}
+ const recorded=await rest(path+"&state=eq.sending","PATCH",{state,response_id:responseId,error_code:errorCode||null,updated_at:new Date().toISOString()},"return=representation").catch(()=>null);
+ if(state==="sent")sent++;else if(state==="failed")failed++;else uncertain++;
+ if(!recorded?.ok||!Array.isArray(recorded.data)||recorded.data.length!==1)uncertain++;
  }
  }
  return out({status:failed||uncertain||scanFailures?"partial":"pass",checked,matches,sent,skipped,failed,uncertain,scanFailures,enabled,preview_only:true,production:"NO_GO"});
