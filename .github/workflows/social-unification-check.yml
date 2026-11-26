@@ -11,10 +11,26 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 3s --health-retries 10
+        ports:
+          - 5432:5432
     steps:
       - uses: actions/checkout@v4
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - run: deno check integration-candidate/social-worker/index.ts
-      - run: deno test --allow-env=SOCIAL_SCHEDULER_KEY,YOUTUBE_SCHEDULER_KEY,SUPABASE_URL integration-candidate/social-worker/
+      - run: >-
+          deno check integration-candidate/social-worker/index.ts
+          integration-candidate/social-webhook/index.ts
+          integration-candidate/social-admin/index.ts
+      - run: deno test --allow-env --deny-net integration-candidate/
+      - run: python3 integration-candidate/tests/postgres.py
+        env:
+          UNIFICATION_TEST_DB: postgresql://postgres:postgres@127.0.0.1:5432/postgres

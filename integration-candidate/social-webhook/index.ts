@@ -1,81 +1,200 @@
-const txt=(s:string,status=200)=>new Response(s,{status,headers:{"content-type":"text/plain; charset=utf-8","cache-control":"no-store"}});
-const equal=(a:string,b:string)=>{const x=new TextEncoder().encode(a),y=new TextEncoder().encode(b);let d=x.length^y.length;for(let i=0;i<Math.max(x.length,y.length);i++)d|=(x[i]||0)^(y[i]||0);return d===0};
-const hex=(b:ArrayBuffer)=>Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,"0")).join("");
-export async function handleWebhook(req: Request): Promise<Response> {
- const verify=Deno.env.get("FB_WEBHOOK_VERIFY_TOKEN")||"";
- const appSecret=Deno.env.get("FB_APP_SECRET")||"";
- if(req.method==="GET"){
-  const u=new URL(req.url),mode=u.searchParams.get("hub.mode")||"",token=u.searchParams.get("hub.verify_token")||"",challenge=u.searchParams.get("hub.challenge")||"";
-  if(!verify||mode!=="subscribe"||!token||!equal(token,verify)||!challenge)return txt("verification_failed",403);
-  return txt(challenge);
- }
- if(req.method!=="POST")return txt("method_not_allowed",405);
- const igSecret=Deno.env.get("IG_APP_SECRET")||"";
- const sig=req.headers.get("x-hub-signature-256")||"";
- if(!/^sha256=[a-f0-9]{64}$/i.test(sig)){console.log("r82_signature_missing_or_malformed");return txt("invalid_signature",403);}
- const raw=await req.arrayBuffer();
- if(raw.byteLength>1024*1024)return txt("payload_too_large",413);
- let data:any;try{data=JSON.parse(new TextDecoder().decode(raw))}catch{return txt("invalid_json",400)}
- const secret=data?.object==="instagram"?igSecret:data?.object==="page"?appSecret:"";
- if(!secret){console.log("r82_platform_secret_missing_or_unsupported");return txt("webhook_not_configured",503);}
- const key=await crypto.subtle.importKey("raw",new TextEncoder().encode(secret),{name:"HMAC",hash:"SHA-256"},false,["sign"]);
- const expected="sha256="+hex(await crypto.subtle.sign("HMAC",key,raw));
- if(!equal(sig.toLowerCase(),expected)){console.log("r82_signature_mismatch");return txt("invalid_signature",403);}
- if(!["page","instagram"].includes(String(data?.object||"")))return txt("unsupported_object",400);
- // R58 Staging: verified Meta events -> R56 facebook_preview, dry run only.
- const entries=Array.isArray(data.entry)?data.entry:[];
- const feedChanges=entries.flatMap((e:any)=>Array.isArray(e.changes)?e.changes:[]).filter((c:any)=>c.field==="feed");
- const platform=data.object==="instagram"?"instagram":"facebook";
- const igId=Deno.env.get("IG_BUSINESS_ACCOUNT_ID")||"";
- const comments=platform==="facebook"
- ? entries.filter((e:any)=>String(e.id)==="1372124255993564").flatMap((e:any)=>(Array.isArray(e.changes)?e.changes:[]).filter((c:any)=>c.field==="feed"&&c.value?.item==="comment"&&c.value?.verb==="add").map((c:any)=>c.value))
- : entries.filter((e:any)=>!!igId&&String(e.id)===igId).flatMap((e:any)=>(Array.isArray(e.changes)?e.changes:[]).filter((c:any)=>c.field==="comments").map((c:any)=>({comment_id:c.value?.id,from:{id:c.value?.from?.id},message:c.value?.text,post_id:c.value?.media?.id,parent_id:c.value?.parent_id,username:c.value?.from?.username,self_id:c.value?.from?.self_ig_scoped_id})));
- const service=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")||"";
- const base=Deno.env.get("SUPABASE_URL")||"";
- let templates:any[]=[];
- if(service&&base){
-   try{
-     const rr=await fetch(base+"/rest/v1/r54_reply_templates?platform=eq."+platform+"&select=template_key,keyword,reply_text",{headers:{apikey:service,Authorization:"Bearer "+service},signal:AbortSignal.timeout(6000)});
-     if(rr.ok)templates=await rr.json();else console.log(JSON.stringify({event:"r79_template_read_failed",http:rr.status}));
-   }catch{console.log(JSON.stringify({event:"r79_template_network_error"}));}
- }
- const norm=(s:string)=>s.normalize("NFKC").toLocaleLowerCase().trim();
- const headers={apikey:service,Authorization:"Bearer "+service,"Content-Type":"application/json"};
- const token=Deno.env.get(platform==="instagram"?"INSTAGRAM_ACCESS_TOKEN":"FB_PAGE_ACCESS_TOKEN")||"";
- let enabled=false;
- if(token&&service&&base){try{const r=await fetch(base+"/rest/v1/r54_reply_controls?platform=eq."+platform+"&select=send_enabled",{headers,signal:AbortSignal.timeout(5000)});enabled=r.ok&&(await r.json())[0]?.send_enabled===true}catch{}}
- const seen=new Set<string>();let matched=0,sent=0;
- for(const c of comments){
-   const id=String(c.comment_id||""),author=String(c.from?.id||""),message=String(c.message||"");
-   if(!id||!author||author===(platform==="facebook"?"1372124255993564":igId)||seen.has(id))continue;
-   seen.add(id);
-   const match=templates.filter((t:any)=>norm(String(t.keyword||""))&&norm(message).includes(norm(String(t.keyword||"")))).sort((a:any,b:any)=>String(b.keyword).length-String(a.keyword).length)[0];
-   if(!match)continue;
- matched++;
- // Candidate hard lock: no claims or delivery.
- if(!enabled || !candidateDeliveryAllowed())continue;
- if(platform==="instagram"&&(!/^\d+$/.test(id)||!/^\d+$/.test(String(c.post_id||""))||c.parent_id||String(c.username||"").toLowerCase()==="sandwichdadhelp"||(c.self_id&&String(c.self_id)===author)))continue;
- if(platform==="facebook"&&(!/^\d+(_\d+)?$/.test(id)||!/^1372124255993564_\d+$/.test(String(c.post_id||""))||(c.parent_id&&String(c.parent_id)!==String(c.post_id))))continue;
- const endpoint=base+"/rest/v1/r54_reply_claims";
- try{
- const claim=await fetch(endpoint+"?on_conflict=platform,comment_id",{method:"POST",headers:{...headers,Prefer:"resolution=ignore-duplicates,return=representation"},body:JSON.stringify({platform,comment_id:id,post_id:String(c.post_id),state:"sending"}),signal:AbortSignal.timeout(5000)});
- if(!claim.ok){console.log(JSON.stringify({event:"r83_claim_failed",http:claim.status}));continue;}
- if(!(await claim.json()).length)continue;
- let state="uncertain",response_id=null,error_code=null;
- try{
- const rr=await fetch("https://graph.facebook.com/v22.0/"+id+(platform==="instagram"?"/replies":"/comments"),{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({message:match.reply_text}),signal:AbortSignal.timeout(8000)});
- const result=await rr.json();
- if(rr.ok&&result.id){state="sent";response_id=String(result.id);sent++;}
- else{state=rr.status>=500?"uncertain":"failed";error_code=String(result.error?.code||rr.status);}
- }catch{error_code="transport_uncertain";}
- const update=await fetch(endpoint+"?platform=eq."+platform+"&comment_id=eq."+id,{method:"PATCH",headers,body:JSON.stringify({state,response_id,error_code,updated_at:new Date().toISOString()}),signal:AbortSignal.timeout(5000)});
- console.log(JSON.stringify({event:"r83_ig_reply",platform,comment_id:id,state,error_code,ledger_http:update.status}));
- }catch{console.log(JSON.stringify({event:"r83_claim_or_update_uncertain",comment_id:id}));}
+import {
+  deliver,
+  graphDelivery,
+  matchRule,
+  normalize,
+  sendConfigured,
+  socialDatabase,
+} from "../shared/social.ts";
 
- }
- console.log(JSON.stringify({event:"r80_meta_webhook_preview",platform,comment_events:comments.length,unique_comments:seen.size,matched,templates:templates.length,mode:enabled?platform+"_live":"staging_preview_only",sends:sent,production:"NO_GO"}));
- console.log(JSON.stringify({event:"fb_webhook_verified",entry_count:entries.length,mode:enabled?platform+"_live":"staging_receive_only",sends:sent}));
- return txt("EVENT_RECEIVED");
+const text = (message: string, status = 200) =>
+  new Response(message, {
+    status,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
+
+function equal(a: string, b: string) {
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  }
+  return diff === 0;
 }
-function candidateDeliveryAllowed(): boolean { return false; }
+
+export async function handleWebhook(req: Request): Promise<Response> {
+  if (req.method === "GET") {
+    const verify = Deno.env.get("FB_WEBHOOK_VERIFY_TOKEN");
+    const params = new URL(req.url).searchParams;
+    const challenge = params.get("hub.challenge");
+    return verify && params.get("hub.mode") === "subscribe" && challenge &&
+        equal(params.get("hub.verify_token") || "", verify)
+      ? text(challenge)
+      : text("verification_failed", 403);
+  }
+  if (req.method !== "POST") return text("method_not_allowed", 405);
+  const signature = req.headers.get("x-hub-signature-256") || "";
+  if (!/^sha256=[a-f0-9]{64}$/i.test(signature)) {
+    return text("invalid_signature", 403);
+  }
+  const raw = await req.arrayBuffer();
+  if (raw.byteLength > 1024 * 1024) return text("payload_too_large", 413);
+  let data;
+  try {
+    data = JSON.parse(new TextDecoder().decode(raw));
+  } catch {
+    return text("invalid_json", 400);
+  }
+  const platform = data?.object === "instagram"
+    ? "instagram"
+    : data?.object === "page"
+    ? "facebook"
+    : null;
+  if (!platform) return text("unsupported_object", 400);
+  const ig = platform === "instagram";
+  const secret = Deno.env.get(ig ? "IG_APP_SECRET" : "FB_APP_SECRET");
+  if (!secret) return text("webhook_not_configured", 503);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"],
+  );
+  const mac = Uint8Array.from(
+    signature.slice(7).match(/../g)!,
+    (part) => parseInt(part, 16),
+  );
+  if (!await crypto.subtle.verify("HMAC", key, mac, raw)) {
+    return text("invalid_signature", 403);
+  }
+
+  const account = Deno.env.get(ig ? "IG_BUSINESS_ACCOUNT_ID" : "FB_PAGE_ID") ||
+    "";
+  const ownUsername = ig ? normalize(Deno.env.get("IG_USERNAME") || "") : "";
+  const base = Deno.env.get("SUPABASE_URL");
+  const service = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!/^\d+$/.test(account) || (ig && !ownUsername) || !base || !service) {
+    return text("missing_configuration", 503);
+  }
+
+  const token = Deno.env.get(
+    ig ? "INSTAGRAM_ACCESS_TOKEN" : "FB_PAGE_ACCESS_TOKEN",
+  );
+  async function graph(path: string, form?: URLSearchParams) {
+    const response = await fetch("https://graph.facebook.com/v22.0/" + path, {
+      method: form ? "POST" : "GET",
+      body: form,
+      headers: { Authorization: "Bearer " + token },
+      redirect: "error",
+      signal: AbortSignal.timeout(8000),
+    });
+    return { response, data: await response.json().catch(() => null) };
+  }
+
+  const db = socialDatabase(base, service);
+  const seen = new Set<string>();
+  let matched = 0, sent = 0, uncertain = 0, retry = false;
+  try {
+    const [rules, activation] = await Promise.all([
+      db.rules(platform),
+      token && sendConfigured(platform) ? db.activation() : null,
+    ]);
+    for (const entry of Array.isArray(data.entry) ? data.entry : []) {
+      if (String(entry?.id) !== account || !Array.isArray(entry?.changes)) {
+        continue;
+      }
+      for (const change of entry.changes) {
+        const value = change?.value;
+        if (
+          !value ||
+          (ig
+            ? change.field !== "comments"
+            : change.field !== "feed" || value.item !== "comment" ||
+              value.verb !== "add")
+        ) continue;
+        const id = String(ig ? value.id || "" : value.comment_id || "");
+        const author = String(value.from?.id || "");
+        const post = String(ig ? value.media?.id || "" : value.post_id || "");
+        if (!author || author === account || seen.has(id)) continue;
+        if (ig) {
+          const username = normalize(String(value.from?.username || ""));
+          if (
+            !/^\d+$/.test(id) || !/^\d+$/.test(post) || !username ||
+            username === ownUsername ||
+            value.parent_id ||
+            String(value.from?.self_ig_scoped_id || "") === author
+          ) continue;
+        } else if (
+          !/^\d+(_\d+)?$/.test(id) || !post.startsWith(account + "_") ||
+          !/^\d+_\d+$/.test(post) ||
+          (value.parent_id && String(value.parent_id) !== post)
+        ) continue;
+        seen.add(id);
+        const rule = matchRule(
+          rules,
+          post,
+          String(ig ? value.text || "" : value.message || ""),
+        );
+        if (!rule) continue;
+        matched++;
+        if (!activation || !token) continue;
+
+        try {
+          let timestamp = "";
+          const time = value.created_time;
+          if (
+            !ig && typeof time === "number" && Number.isSafeInteger(time) &&
+            time > 0 && time <= Date.now() / 1000
+          ) {
+            timestamp = new Date(time * 1000).toISOString();
+          } else {
+            const check = await graph(
+              id + (ig ? "?fields=id,timestamp" : "?fields=id,created_time"),
+            );
+            if (!check.response.ok || String(check.data?.id) !== id) {
+              if (
+                check.response.status >= 500 || check.response.status === 429
+              ) retry = true;
+              continue;
+            }
+            timestamp = ig ? check.data?.timestamp : check.data?.created_time;
+          }
+          const outcome = await deliver(db, {
+            platform,
+            comment: id,
+            post,
+            timestamp,
+            activation,
+          }, async () => {
+            const { response, data } = await graph(
+              id + (ig ? "/replies" : "/comments"),
+              new URLSearchParams({ message: rule.reply_text }),
+            );
+            return graphDelivery(response, data);
+          });
+          if (outcome === "sent") sent++;
+          if (outcome === "uncertain") uncertain++;
+        } catch {
+          retry = true;
+        }
+      }
+    }
+  } catch {
+    return text("rules_unavailable", 502);
+  }
+  console.log(
+    JSON.stringify({
+      event: "social_webhook",
+      platform,
+      matched,
+      sent,
+      uncertain,
+    }),
+  );
+  return retry ? text("retry_required", 502) : text("EVENT_RECEIVED");
+}
+
 if (import.meta.main) Deno.serve(handleWebhook);
