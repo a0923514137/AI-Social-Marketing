@@ -17,4 +17,4 @@ jobs:
         with:
           deno-version: v2.x
       - run: deno check integration-candidate/social-worker/index.ts
-      - run: deno test integration-candidate/social-worker/
+      - run: deno test --allow-env=SOCIAL_SCHEDULER_KEY,YOUTUBE_SCHEDULER_KEY,SUPABASE_URL integration-candidate/social-worker/
