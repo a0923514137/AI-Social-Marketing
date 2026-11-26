@@ -1,4 +1,5 @@
-import {parseCommand,MENU} from "./commands.ts";
+import {management} from "./management.ts";
+import {parseCommand} from "./commands.ts";
 import {handleReview} from "./review.ts";
 const j=(x:unknown,s=200)=>new Response(JSON.stringify(x),{status:s,headers:{"content-type":"application/json"}});
 export async function handleAdmin(req: Request): Promise<Response> {
@@ -18,8 +19,19 @@ export async function handleAdmin(req: Request): Promise<Response> {
  if(!Number.isSafeInteger(u?.update_id))return j({error:"invalid_update"},400);
  if(!cb && typeof msg?.text==="string"){
  const command=parseCommand(msg.text);
- if(command.action==="menu"||command.action==="invalid")return j({accepted:true,preview_only:true,message:MENU});
- if(command.action!=="other")return j({accepted:true,preview_only:true,action:command.action,writes:0});
+ if(command.action!=="other"){
+ try{
+ const message=await management(command,url,service);
+ const bot=Deno.env.get("TELEGRAM_BOT_TOKEN")||"";
+ if(!bot)return j({error:"bot_not_configured"},503);
+ const chars=Array.from(message);
+ for(let i=0;i<chars.length;i+=3000){
+ const r=await fetch("https://api.telegram.org/bot"+bot+"/sendMessage",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({chat_id:chat,text:chars.slice(i,i+3000).join("")}),signal:AbortSignal.timeout(8000)});
+ if(!r.ok)return j({error:"telegram_send_failed"},502);
+ }
+ return j({accepted:true,action:command.action,writes:0,notified:true});
+ }catch{return j({error:"management_failed"},502);}
+ }
  }
  const data=String(cb?.data||"");
  const match=/^r53:(approve|edit|regenerate|cancel):([0-9a-f-]{36})$/i.exec(data);
