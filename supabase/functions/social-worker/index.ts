@@ -1,5 +1,6 @@
 import scan from "./threads_scan.ts";
 import patrol from "./threads_patrol.ts";
+import { handleYoutubePreview } from "./youtube.ts";
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -98,6 +99,11 @@ try {
   const mode = x.mode === undefined
     ? "preview"
     : x.mode;
+
+  if (task === "youtube_poll") {
+    if (mode !== "preview") return json({error: "invalid_mode"}, 400);
+    return handleYoutubePreview();
+  }
 
   if (
     task !== "threads_scan" &&
