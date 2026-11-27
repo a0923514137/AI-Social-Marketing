@@ -39,6 +39,7 @@ export async function handleWebhook(req: Request): Promise<Response> {
   if (req.method !== "POST") return text("method_not_allowed", 405);
   const signature = req.headers.get("x-hub-signature-256") || "";
   if (!/^sha256=[a-f0-9]{64}$/i.test(signature)) {
+    console.log(JSON.stringify({event:"social_signature_check", reason:signature ? "malformed" : "missing"}));
     return text("invalid_signature", 403);
   }
   const raw = await req.arrayBuffer();
@@ -70,6 +71,7 @@ export async function handleWebhook(req: Request): Promise<Response> {
     (part) => parseInt(part, 16),
   );
   if (!await crypto.subtle.verify("HMAC", key, mac, raw)) {
+    console.log(JSON.stringify({event:"social_signature_check", platform, reason:"mismatch"}));
     return text("invalid_signature", 403);
   }
 
