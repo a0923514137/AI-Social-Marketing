@@ -6,7 +6,7 @@ Deno.test("missing and malformed signatures rejected", async()=>{
  }
 });
 Deno.test("incorrect HMAC rejected for both platforms",async()=>{
- for(const [object,key] of [["page","FB_APP_SECRET"],["instagram","IG_APP_SECRET"]]){
+ for(const [object,key] of [["page","FB_APP_SECRET"],["instagram","FB_APP_SECRET"]]){
   const old=Deno.env.get(key);
   try{
    Deno.env.set(key,"offline-test-secret");
