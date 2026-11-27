@@ -1,12 +1,11 @@
+import { matchGlobalKeyword, type GlobalKeyword } from "../shared/global_keyword_candidate.ts";
 const api = "https://www.googleapis.com/youtube/v3/";
 export const dailyLimit = 150;
 export const pollIntervalMinutes = 5;
 const maxPages = 5;
 const stagingOrigin = "https://eziafqttckcdvjxxvxsv.supabase.co";
-const templateKeys = ["ep03_video_edit", "ep08_automation", "default_ai"];
 
 type Env = (key: string) => string | undefined;
-type Template = { template_key: string; keyword: string; reply_text: string };
 type Comment = {
   id?: string;
   snippet?: {
@@ -166,30 +165,15 @@ export function createYoutubePreview({
     return response.json();
   }
 
-  async function templates() {
-    const base = required("SUPABASE_URL");
-    const service = required("SUPABASE_SERVICE_ROLE_KEY");
+  async function templates(): Promise<GlobalKeyword[]> {
     const query = new URLSearchParams({
-      platform: "eq.instagram",
-      template_key: "in.(" + templateKeys.join(",") + ")",
-      select: "template_key,keyword,reply_text",
+      global_enabled: "eq.true",
+      select: "id,keyword,reply_text,global_enabled",
+      order: "keyword_key.asc",
     });
-    const response = await request(
-      new URL("/rest/v1/r54_reply_templates?" + query, base),
-      {
-        headers: { apikey: service, Authorization: "Bearer " + service },
-        signal: AbortSignal.timeout(6000),
-      },
-    );
-    if (!response.ok) throw new PreviewError("reply_templates_unavailable");
-    const rows: Template[] = await response.json();
-    return templateKeys.map((key) => {
-      const row = rows.find((item) => item.template_key === key);
-      if (!row?.keyword?.trim() || !row.reply_text?.trim()) {
-        throw new PreviewError("reply_template_missing");
-      }
-      return row;
-    });
+    const rows = await database<GlobalKeyword[]>("social_keywords?" + query);
+    if (!Array.isArray(rows)) throw new PreviewError("reply_templates_unavailable");
+    return rows;
   }
 
   function finish(
@@ -363,8 +347,6 @@ export function createYoutubePreview({
       }
     }
     const rules = await templates();
-    const normalize = (text: string) =>
-      text.normalize("NFKC").trim().toLowerCase();
     const seen = new Set<string>();
     const candidates: {
       comment_id: string;
@@ -421,11 +403,7 @@ export function createYoutubePreview({
           skipped.self++;
           continue;
         }
-        const body = normalize(comment.snippet?.textDisplay ?? "");
-        const rule = rules.find((item) =>
-          body.includes(normalize(item.keyword)) ||
-          (item.template_key === "default_ai" && body.includes("系統"))
-        );
+        const rule = matchGlobalKeyword(rules, comment.snippet?.textDisplay ?? "");
         if (!rule) {
           skipped.unmatched++;
           continue;
@@ -448,7 +426,7 @@ export function createYoutubePreview({
         }
         candidates.push({
           comment_id: id,
-          template_key: rule.template_key,
+          template_key: rule.id,
           reply_text: rule.reply_text,
           author,
           published_at: new Date(published).toISOString(),
