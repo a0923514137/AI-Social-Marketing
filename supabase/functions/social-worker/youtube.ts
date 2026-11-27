@@ -165,6 +165,18 @@ export function createYoutubePreview({
     return response.json();
   }
 
+  async function globalActivation(): Promise<number> {
+    const rows = await database<{ enabled: boolean; activated_at: string | null }[]>(
+      "social_reply_switch?singleton=eq.true&select=enabled,activated_at",
+    );
+    const row = Array.isArray(rows) && rows.length === 1 ? rows[0] : undefined;
+    const activated = Date.parse(row?.activated_at ?? "");
+    if (row?.enabled !== true || !Number.isFinite(activated) || activated > clock()) {
+      throw new PreviewError("youtube_send_disabled");
+    }
+    return activated;
+  }
+
   async function templates(): Promise<GlobalKeyword[]> {
     const query = new URLSearchParams({
       global_enabled: "eq.true",
@@ -239,6 +251,7 @@ export function createYoutubePreview({
       published_at: string;
     },
   ) {
+    if (Date.parse(candidate.published_at) <= await globalActivation()) return "disabled";
     if (await replies(candidate.comment_id, () => true)) {
       return "existing_reply";
     }
@@ -260,6 +273,15 @@ export function createYoutubePreview({
       return "reservation_expired";
     }
 
+    try {
+      if (Date.parse(candidate.published_at) <= await globalActivation()) {
+        await finish(channel, candidate.comment_id, "rejected");
+        return "disabled";
+      }
+    } catch (error) {
+      await finish(channel, candidate.comment_id, "rejected");
+      throw error;
+    }
     let response: Response | undefined;
     try {
       response = await request(api + "comments?part=snippet", {
@@ -319,7 +341,8 @@ export function createYoutubePreview({
     if (mode === "run" && !settings.send_enabled) {
       throw new PreviewError("youtube_send_disabled");
     }
-    const baseline = Date.parse(settings.baseline_at);
+    const baseline = Math.max(Date.parse(settings.baseline_at),
+      mode === "run" ? await globalActivation() : -Infinity);
     if (!Number.isFinite(baseline)) throw new PreviewError("invalid_baseline");
     const now = clock();
     const identity = await read<Page<{ id?: string }>>("channels", {
