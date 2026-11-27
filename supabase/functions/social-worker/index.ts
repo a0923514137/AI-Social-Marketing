@@ -143,8 +143,9 @@ export async function handleRequest(
   }
 
   if (task === "youtube_poll") {
-    if (mode !== "preview") return json({ error: "youtube_preview_only", sends: 0, production: "NO_GO" }, 403);
-    return handleYoutubePreview("preview");
+    if (mode === "preview") return handleYoutubePreview("preview");
+    if (mode !== "run" || !socialAuthorized || Deno.env.get("YOUTUBE_SINGLE_TEST_ENABLED") !== "true" || typeof x.comment_id !== "string" || x.comment_id !== Deno.env.get("YOUTUBE_SINGLE_TEST_COMMENT_ID")) return json({ error: "youtube_preview_only", sends: 0, production: "NO_GO" }, 403);
+    return handleYoutubePreview("run", x.comment_id);
   }
 
   if (
