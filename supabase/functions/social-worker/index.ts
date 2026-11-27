@@ -107,12 +107,7 @@ export async function handleRequest(
   const task = x.task;
   const mode = x.mode === undefined ? "preview" : x.mode;
 
-  if (
-    !socialAuthorized &&
-    (task !== "youtube_poll" ||
-      (mode !== "preview" &&
-        !(mode === "run" && x.comment_id === "Ugz2GvIH-bT0JDD49vV4AaABAg")))
-  ) {
+  if (!socialAuthorized && (task !== "youtube_poll" || mode !== "preview")) {
     return json({ error: "unauthorized" }, 401);
   }
 
@@ -149,13 +144,7 @@ export async function handleRequest(
 
   if (task === "youtube_poll") {
     if (mode !== "preview") return json({ error: "youtube_preview_only", sends: 0, production: "NO_GO" }, 403);
-    if (mode !== "preview" && mode !== "run") {
-      return json({ error: "invalid_mode" }, 400);
-    }
-    if (mode === "run" && x.comment_id !== "Ugz2GvIH-bT0JDD49vV4AaABAg") {
-      return json({ error: "single_target_required" }, 403);
-    }
-    return handleYoutubePreview(mode);
+    return handleYoutubePreview("preview");
   }
 
   if (
