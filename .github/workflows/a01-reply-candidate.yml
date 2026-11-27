@@ -18,3 +18,4 @@ jobs:
       - run: deno check supabase/functions/social-worker/index.ts
 
       - run: deno check supabase/functions/social-webhook/index.ts
+      - run: deno test --allow-env=FB_APP_SECRET,IG_APP_SECRET supabase/functions/social-webhook/signature_test.ts
