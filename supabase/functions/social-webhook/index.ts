@@ -57,7 +57,7 @@ export async function handleWebhook(req: Request): Promise<Response> {
     : null;
   if (!platform) return text("unsupported_object", 400);
   const ig = platform === "instagram";
-  const secret = Deno.env.get(ig ? "IG_APP_SECRET" : "FB_APP_SECRET");
+  const secret = Deno.env.get("FB_APP_SECRET");
   if (!secret) return text("webhook_not_configured", 503);
   const key = await crypto.subtle.importKey(
     "raw",
