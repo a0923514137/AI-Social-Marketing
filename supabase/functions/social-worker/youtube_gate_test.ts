@@ -21,7 +21,7 @@ for (const row of [
     };
     const poll = createYoutubePreview({env:k=>values[k],request,clock:()=>now});
     let error = "";
-    try { await poll("run"); } catch(e) { error = (e as Error).message; }
+    try { await poll("run", "target_123"); } catch(e) { error = (e as Error).message; }
     if(error !== "youtube_send_disabled" || calls.length !== 2) throw Error("gate failed: "+error);
   });
 }
@@ -49,4 +49,10 @@ Deno.test("preview skips historical, self, duplicate and already replied comment
   const result=await poll("preview");
   if(result.sends!==0 || result.candidates.length!==1 || result.candidates[0].comment_id!=="new" || result.skipped.historical!==1 || result.skipped.self!==1 || result.skipped.duplicate!==2)throw Error("preview filtering regression");
   if(calls.some(u=>u.includes("/comments?")))throw Error("unexpected delivery");
+});
+
+Deno.test("missing target blocks network", async()=>{
+ const poll=createYoutubePreview({env:k=>values[k],request:async()=>{throw Error("network called");},clock:()=>now});
+ let error="";try{await poll("run");}catch(e){error=(e as Error).message;}
+ if(error!=="youtube_send_disabled")throw Error(error);
 });
