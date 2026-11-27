@@ -1,3 +1,4 @@
+import { facebookLegacyReview, threadsLegacyReview } from "./legacy_reviews.ts";
 import { management, managementEvent } from "./management.ts";
 import { handleReview } from "./review.ts";
 const j = (x: unknown, s = 200) =>
@@ -6,6 +7,9 @@ const j = (x: unknown, s = 200) =>
     headers: { "content-type": "application/json" },
   });
 export async function handleAdmin(req: Request): Promise<Response> {
+  const task = new URL(req.url).searchParams.get("task");
+  if (task === "threads_review") return threadsLegacyReview(req);
+  if (task === "facebook_review") return facebookLegacyReview(req);
   if (req.method !== "POST") return j({ error: "method_not_allowed" }, 405);
   const secret = Deno.env.get("R53_TELEGRAM_WEBHOOK_SECRET") || "";
   const owner = Deno.env.get("R53_TELEGRAM_ADMIN_ID") || "";

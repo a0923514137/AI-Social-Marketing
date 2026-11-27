@@ -28,6 +28,17 @@
 
 Worker 接收 JSON `{"task":"…","mode":"…"}`。以上對應以交接資料為基礎，切換前需核對每個舊排程 payload 與實際行為。
 
+## 本次補齊的舊入口對應
+
+| 舊入口 | 候選 URL 後綴與行為 |
+| --- | --- |
+| `r54-06-resolve-post-staging` | `GET /functions/v1/social-worker?task=threads_resolve_post&url=<URL-encoded permalink>`。只查登入帳號的 Threads 貼文，逐頁比對帳號與 shortcode，保留 `post_id`、`pages_scanned`。未傳 URL 時用 `THREADS_RESOLVE_DEFAULT_URL`，未設定才用舊預設網址。新入口需 Service Role、Threads 管理金鑰或排程金鑰。 |
+| `threads-keyword-search-v2-staging` | `POST /functions/v1/social-worker?task=threads_keyword_search`。Service Role 或 V2 管理金鑰驗證，沿用 V2 搜尋 Token。支援唯讀 `preview`／`search_only`、`diagnostic`，以及 `collect`／舊版 `run_preview` 候選入庫。兩個入庫模式保留 20 分鐘視窗與貼文 ID 去重，無 AI 呼叫或發送。可傳最多 12 個 `keywords`，未傳時使用共用全域規則。全域規則超出上限時請明確傳入一組關鍵字。 |
+| `threads-r53-review-staging` | `POST /functions/v1/social-admin?task=threads_review`。沿用 Service Role 或 Threads 管理金鑰，保留臺北日期、版本歷史、建立、重新產生時提交文案、修改、核准、取消。核准後禁止重新產生，`bind_post` 仍要求獨立啟用。Telegram 草稿流程仍走原有回呼入口。 |
+| `r69-facebook-admin-review-staging` | `POST /functions/v1/social-admin?task=facebook_review`。以原 Supabase 使用者 Bearer Token 呼叫，伺服器驗證 `app_metadata.facebook_review_admin`。支援 `OPTIONS`、`list`、`edit`、`approve`、`cancel`，沿用既有審核 RPC 與稽核，核准不觸發發送。 |
+
+切換時保留原 HTTP 方法與請求內容，依上述表更換 URL，並確認原本無鑑權的貼文解析呼叫者已能安全提供憑證。驗收先用唯讀搜尋與草稿列表。候選入庫、審核寫入與真實回覆按授權範圍在 Staging 分開測試。
+
 ## 舊入口淘汰清單
 
 以下只作為依賴交叉核對清單。需查 Cron、Vault 引用、Meta／Telegram 回呼、內部呼叫與實際流量。完成替代功能與觀察後才可申請淘汰。
@@ -40,13 +51,13 @@ Worker 接收 JSON `{"task":"…","mode":"…"}`。以上對應以交接資料�
 | `r57-facebook-webhook-staging` | Webhook，待切換及實際收到事件 |
 | `r54-02-threads-auto-reply-staging` | Worker Threads scan，待比對回覆行為 |
 | `r54-03-threads-reply-guard-staging` | Worker 與資料庫去重，待核對原呼叫者 |
-| `r54-06-resolve-post-staging` | 既有貼文 ID 匯入已涵蓋，獨立貼文連結解析待補或確認無依賴 |
+| `r54-06-resolve-post-staging` | Worker 獨立解析入口，待切換呼叫者 |
 | `threads-r53-telegram-webhook-staging` | Admin，待切換 Telegram Webhook |
 | `threads-r53-telegram-staging` | Admin，待比對管理入口 |
-| `threads-r53-review-staging` | Admin 既有草稿回呼，獨立審核呼叫者待核對 |
+| `threads-r53-review-staging` | Admin 日期式草稿審核及既有 Telegram 草稿回呼，待切換呼叫者 |
 | `threads-ai-reply-r53-staging` | Worker 固定回覆，獨立 AI 產生回覆能力待確認 |
-| `threads-keyword-search-v2-staging` | Worker 已有自有貼文海巡，獨立關鍵字搜尋 API 待確認 |
-| `r69-facebook-admin-review-staging` | Admin，獨立 FB 審核操作待確認 |
+| `threads-keyword-search-v2-staging` | Worker 獨立關鍵字搜尋與候選入庫，待用 Meta 測試授權驗證 |
+| `r69-facebook-admin-review-staging` | Admin 獨立 FB 候選審核，待以 Supabase 測試管理者驗證 |
 | `r64-facebook-reply-candidate-staging` | Webhook 回覆、Worker 模擬，待比對審核／呼叫入口 |
 | `r60-facebook-bridge-test-staging` | Webhook，待核對 bridge 和測試呼叫者 |
 

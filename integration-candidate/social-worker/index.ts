@@ -1,3 +1,4 @@
+import { keywordSearch, resolvePost } from "./threads_discovery.ts";
 import instagramReply from "./instagram_reply.ts";
 import facebookPreview from "./facebook_preview.ts";
 import scan from "./threads_scan.ts";
@@ -15,6 +16,9 @@ const json = (data: unknown, status = 200) =>
 export async function handleRequest(
   req: Request,
 ): Promise<Response> {
+  const discoveryTask = new URL(req.url).searchParams.get("task");
+  if (discoveryTask === "threads_resolve_post") return resolvePost(req);
+  if (discoveryTask === "threads_keyword_search") return keywordSearch(req);
   if (req.method !== "POST") {
     return json({ error: "method_not_allowed" }, 405);
   }
