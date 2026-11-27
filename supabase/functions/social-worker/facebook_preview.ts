@@ -23,22 +23,36 @@ export default async function facebookPreview(req: Request) {
     try {
       const posts=await read(page+"/posts?fields=id&limit=10");
       if(!posts.r.ok||!Array.isArray(posts.d?.data)) return Response.json({error:"facebook_posts_unavailable",http_status:posts.r.status,meta_code:posts.d?.error?.code??null,sends:0},{status:502});
-      let checked=0,matched=0,failures=0;
-      for(const p of posts.d.data.slice(0,10)){
-        const post=String(p?.id||"");
-        if(!post.startsWith(page+"_")||!/^\d+_\d+$/.test(post))continue;
+      let checked=0,matched=0,failures=0,missingAuthor=0,ownComments=0;
+      const ids=new Set<string>();
+      for(const p of posts.d.data) if(typeof p?.id==="string") ids.add(p.id);
+      let feedAvailable=false, feedPartial=false;
+      try {
+        const feed=await read(page+"/feed?fields=id&limit=25");
+        feedAvailable=feed.r.ok&&Array.isArray(feed.d?.data);
+        if(feedAvailable){
+          for(const p of feed.d.data) if(typeof p?.id==="string") ids.add(p.id);
+          feedPartial=!!feed.d.paging?.next;
+        }
+      }catch{/* posts remain available */}
+      const owned=[...ids].filter(id=>id.startsWith(page+"_")&&/^\d+_\d+$/.test(id));
+      let scannedPosts=0;
+      for(const post of owned.slice(0,25)){
+
         try{
           const c=await read(post+"/comments?fields=id,message,from,created_time&filter=toplevel&limit=50");
           if(!c.r.ok||!Array.isArray(c.d?.data)){failures++;continue;}
+          scannedPosts++;
           for(const item of c.d.data.slice(0,50)){
             checked++;
-            if(!item?.from?.id||String(item.from.id)===page)continue;
+            if(!item?.from?.id){missingAuthor++;continue;}
+            if(String(item.from.id)===page){ownComments++;continue;}
             if(matchRule(rules,post,String(item.message||"")))matched++;
           }
           if(c.d.paging?.next)failures++;
         }catch{failures++;}
       }
-      return Response.json({status:failures||posts.d.paging?.next?"partial":"pass",posts_checked:posts.d.data.length,checked,matched,failures,sends:0,preview_only:true,production:"NO_GO"});
+      return Response.json({status:failures||posts.d.paging?.next||feedPartial||!feedAvailable||owned.length>25?"partial":"pass",posts_checked:scannedPosts,posts_discovered:owned.length,feed_available:feedAvailable,missing_author:missingAuthor,own_comments:ownComments,checked,matched,failures,sends:0,preview_only:true,production:"NO_GO"});
     }catch{return Response.json({error:"facebook_scan_failed",sends:0},{status:502});}
   }
   const seen = new Set<string>();
