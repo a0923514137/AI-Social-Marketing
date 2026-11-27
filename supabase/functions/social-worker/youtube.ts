@@ -3,7 +3,7 @@ const api = "https://www.googleapis.com/youtube/v3/";
 export const dailyLimit = 150;
 export const pollIntervalMinutes = 5;
 const maxPages = 5;
-const stagingOrigin = "https://eziafqttckcdvjxxvxsv.supabase.co";
+const stagingOrigin = "https://vnvrkbeyrhatbnjhglmv.supabase.co";
 
 type Env = (key: string) => string | undefined;
 type Comment = {
@@ -302,7 +302,8 @@ export function createYoutubePreview({
 
   return async function poll(mode: "preview" | "run" = "preview") {
     if (
-      mode === "run" && (env("YOUTUBE_SEND_ENABLED") !== "true" ||
+      mode === "run" && (env("SOCIAL_SEND_ENABLED") !== "true" ||
+        env("YOUTUBE_SEND_ENABLED") !== "true" ||
         new URL(required("SUPABASE_URL")).origin !== stagingOrigin)
     ) {
       throw new PreviewError("youtube_send_disabled");
