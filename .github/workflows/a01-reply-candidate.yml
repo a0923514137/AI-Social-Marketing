@@ -15,6 +15,6 @@ jobs:
           deno-version: v2.5.6
       - run: deno test supabase/functions/shared/global_keyword_candidate_test.ts supabase/functions/shared/reply_gate_candidate_test.ts
       - run: deno test supabase/functions/social-worker/youtube_gate_test.ts
-      - run: deno check supabase/functions/social-worker/youtube.ts
+      - run: deno check supabase/functions/social-worker/index.ts
 
       - run: deno check supabase/functions/social-webhook/index.ts
