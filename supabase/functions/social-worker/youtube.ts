@@ -322,7 +322,7 @@ export function createYoutubePreview({
     return confirmed ? "reconciled" : "uncertain";
   }
 
-  return async function poll(mode: "preview" | "run" = "preview") {
+  return async function poll(mode: "preview" | "run" = "preview", target?: string) {
     if (
       mode === "run" && (env("SOCIAL_SEND_ENABLED") !== "true" ||
         env("YOUTUBE_SEND_ENABLED") !== "true" ||
@@ -330,6 +330,7 @@ export function createYoutubePreview({
     ) {
       throw new PreviewError("youtube_send_disabled");
     }
+    if (mode === "run" && (!target || !/^[A-Za-z0-9_-]{8,128}$/.test(target))) throw new PreviewError("youtube_send_disabled");
     const channel = required("YOUTUBE_CHANNEL_ID");
     const settings = await rpc<{ baseline_at: string; send_enabled: boolean }>(
       "setup",
@@ -468,8 +469,8 @@ export function createYoutubePreview({
       );
       for (
         const candidate of candidates.filter(({ comment_id }) =>
-          !known.has(comment_id)
-        ).reverse().slice(0, 10)
+          comment_id === target && !known.has(comment_id)
+        ).slice(0, 1)
       ) {
         let result: string;
         try {
@@ -514,9 +515,9 @@ export function createYoutubePreview({
 }
 
 const preview = createYoutubePreview();
-export async function handleYoutubePreview(mode: "preview" | "run") {
+export async function handleYoutubePreview(mode: "preview" | "run", target?: string) {
   try {
-    return Response.json(await preview(mode));
+    return Response.json(await preview(mode, target));
   } catch (error) {
     const code = error instanceof PreviewError
       ? error.message
