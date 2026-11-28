@@ -42,7 +42,7 @@ export function createTikTokPreview({
         video_id: videoId,
         status: "PUBLIC",
         include_replies: "false",
-        page_size: String(pageSize),
+        max_count: String(pageSize),
         ...(cursor === undefined ? {} : { cursor: String(cursor) }),
       }).toString();
 

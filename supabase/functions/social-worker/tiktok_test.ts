@@ -36,7 +36,8 @@ Deno.test("TikTok only reads public comments on the configured video and reports
       assertEqual(url.searchParams.get("video_id"), videoId);
       assertEqual(url.searchParams.get("status"), "PUBLIC");
       assertEqual(url.searchParams.get("include_replies"), "false");
-      assertEqual(url.searchParams.get("page_size"), "20");
+      assertEqual(url.searchParams.get("max_count"), "20");
+      assertEqual(url.searchParams.has("page_size"), false);
       assertEqual(url.searchParams.has("Access-Token"), false);
       assertEqual(init?.method, "GET");
       assertEqual(init?.redirect, "error");
