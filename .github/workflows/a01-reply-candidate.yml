@@ -1,12 +1,13 @@
 name: A01 reply candidate tests
 on:
   push:
-    branches: [agent01/four-platform-reply-audit]
+    branches: [agent01/four-platform-reply-audit, codex/v38-agent00]
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   candidate-tests:
+    if: github.ref != 'refs/heads/codex/v38-agent00'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,3 +23,33 @@ jobs:
 
       - run: deno check supabase/functions/social-admin/index.ts
       - run: deno test --allow-env=FB_APP_SECRET,FB_PAGE_ID,FB_PAGE_ACCESS_TOKEN,IG_BUSINESS_ACCOUNT_ID,IG_USERNAME,INSTAGRAM_ACCESS_TOKEN,SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SOCIAL_SEND_ENABLED supabase/functions/social-webhook/routing_test.ts
+
+  v38-integration:
+    if: github.ref == 'refs/heads/codex/v38-agent00'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.5.6
+      - run: deno check supabase/functions/social-webhook/index.ts supabase/functions/social-admin/index.ts supabase/functions/social-worker/index.ts
+      - name: Four-platform reply and Telegram integration
+        run: >-
+          deno test --deny-net
+          --allow-env=FB_APP_SECRET,FB_PAGE_ID,FB_PAGE_ACCESS_TOKEN,IG_BUSINESS_ACCOUNT_ID,IG_USERNAME,INSTAGRAM_ACCESS_TOKEN,SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SOCIAL_SEND_ENABLED,SOCIAL_FB_SEND_ENABLED,SOCIAL_IG_SEND_ENABLED,SOCIAL_FB_SINGLE_TEST_COMMENT_ID,SOCIAL_IG_SINGLE_TEST_COMMENT_ID,SOCIAL_THREADS_SINGLE_TEST_COMMENT_ID,R53_TELEGRAM_WEBHOOK_SECRET,R53_TELEGRAM_ADMIN_ID,R53_TELEGRAM_CHAT_ID,TELEGRAM_BOT_TOKEN,SOCIAL_TELEGRAM_ENABLED,THREADS_PATROL_ADMIN_KEY,SOCIAL_SCHEDULER_KEY,YOUTUBE_SCHEDULER_KEY,YOUTUBE_SINGLE_TEST_ENABLED,YOUTUBE_SINGLE_TEST_COMMENT_ID,THREADS_ACCESS_TOKEN,TELEGRAM_CHAT_ID
+          supabase/functions/social-webhook/routing_test.ts
+          supabase/functions/social-admin/index_test.ts
+          supabase/functions/shared/social_test.ts
+          supabase/functions/social-worker/threads_safety_test.ts
+          supabase/functions/social-worker/youtube_test.ts
+          supabase/functions/social-worker/youtube_gate_test.ts
+
+  v38-tiktok-preview:
+    if: github.ref == 'refs/heads/codex/v38-agent00'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.5.6
+      - run: deno test --deny-net --allow-env=SOCIAL_SCHEDULER_KEY,YOUTUBE_SCHEDULER_KEY supabase/functions/social-worker/tiktok_test.ts
