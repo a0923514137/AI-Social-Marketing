@@ -21,3 +21,4 @@ jobs:
       - run: deno test --allow-env=FB_APP_SECRET,IG_APP_SECRET supabase/functions/social-webhook/signature_test.ts
 
       - run: deno check supabase/functions/social-admin/index.ts
+      - run: deno test --allow-env=FB_APP_SECRET,FB_PAGE_ID,FB_PAGE_ACCESS_TOKEN,IG_BUSINESS_ACCOUNT_ID,IG_USERNAME,INSTAGRAM_ACCESS_TOKEN,SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SOCIAL_SEND_ENABLED supabase/functions/social-webhook/routing_test.ts

@@ -44,19 +44,6 @@ export async function handleWebhook(req: Request): Promise<Response> {
   }
   const raw = await req.arrayBuffer();
   if (raw.byteLength > 1024 * 1024) return text("payload_too_large", 413);
-  let data;
-  try {
-    data = JSON.parse(new TextDecoder().decode(raw));
-  } catch {
-    return text("invalid_json", 400);
-  }
-  const platform = data?.object === "instagram"
-    ? "instagram"
-    : data?.object === "page"
-    ? "facebook"
-    : null;
-  if (!platform) return text("unsupported_object", 400);
-  const ig = platform === "instagram";
   const secret = Deno.env.get("FB_APP_SECRET");
   if (!secret) return text("webhook_not_configured", 503);
   const key = await crypto.subtle.importKey(
@@ -71,9 +58,23 @@ export async function handleWebhook(req: Request): Promise<Response> {
     (part) => parseInt(part, 16),
   );
   if (!await crypto.subtle.verify("HMAC", key, mac, raw)) {
-    console.log(JSON.stringify({event:"social_signature_check", platform, reason:"mismatch"}));
+    console.log(JSON.stringify({event:"social_signature_check", reason:"mismatch"}));
     return text("invalid_signature", 403);
   }
+
+  let data;
+  try {
+    data = JSON.parse(new TextDecoder().decode(raw));
+  } catch {
+    return text("invalid_json", 400);
+  }
+  const platform = data?.object === "instagram"
+    ? "instagram"
+    : data?.object === "page"
+    ? "facebook"
+    : null;
+  if (!platform) return text("unsupported_object", 400);
+  const ig = platform === "instagram";
 
   const account = Deno.env.get(ig ? "IG_BUSINESS_ACCOUNT_ID" : "FB_PAGE_ID") ||
     "";
