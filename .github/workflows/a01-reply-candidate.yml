@@ -2,6 +2,7 @@ name: A01 reply candidate tests
 on:
   push:
     branches: [agent01/four-platform-reply-audit, codex/v38-agent00]
+    paths-ignore: [CENTRAL-DEVELOPMENT-STATUS.zh-TW.md]
   workflow_dispatch:
 permissions:
   contents: read
