@@ -4,6 +4,7 @@ import {
   matchRule,
   normalize,
   sendConfigured,
+  sendTargetConfigured,
   socialDatabase,
 } from "../shared/social.ts";
 
@@ -149,7 +150,9 @@ export async function handleWebhook(req: Request): Promise<Response> {
         );
         if (!rule) continue;
         matched++;
-        if (!activation || !token) continue;
+        if (!activation || !token || !sendTargetConfigured(platform, id)) {
+          continue;
+        }
 
         try {
           let timestamp = "";

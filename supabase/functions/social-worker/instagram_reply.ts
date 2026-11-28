@@ -3,6 +3,8 @@ import {
   graphDelivery,
   matchRule,
   normalize,
+  sendConfigured,
+  sendTargetConfigured,
   socialDatabase,
 } from "../shared/social.ts";
 
@@ -23,12 +25,23 @@ export default async function instagramReply(req: Request) {
       status: 503,
     });
   }
-  const { mode } = await req.json();
+  const { mode, comment_id: target } = await req.json();
   if (mode !== "preview" && mode !== "run") {
     return Response.json({ error: "invalid_mode" }, { status: 400 });
   }
 
-  if (mode === "run" && (Deno.env.get("SOCIAL_SEND_ENABLED") !== "true" || Deno.env.get("SOCIAL_IG_SEND_ENABLED") !== "true")) return Response.json({ error: "send_disabled", sent: 0, production: "NO_GO" }, { status: 403 });
+  if (mode === "run" && !sendConfigured("instagram")) {
+    return Response.json(
+      { error: "send_disabled", sent: 0, production: "NO_GO" },
+      { status: 403 },
+    );
+  }
+  if (mode === "run" && !sendTargetConfigured("instagram", target)) {
+    return Response.json(
+      { error: "single_test_target_required", sent: 0, production: "NO_GO" },
+      { status: 403 },
+    );
+  }
   const db = socialDatabase(base, service);
   let diagnostic: Record<string, unknown> = { stage: "initial" };
   const numeric = (v: unknown) => typeof v === "number" && Number.isFinite(v) ? v : null;
@@ -96,7 +109,7 @@ export default async function instagramReply(req: Request) {
         if (!rule) continue;
         matches++;
         matchedIds.push(comment);
-        if (mode !== "run") continue;
+        if (mode !== "run" || comment !== target) continue;
         const result = await deliver(db, {
           platform: "instagram",
           comment,

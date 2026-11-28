@@ -135,7 +135,11 @@ export async function handleRequest(
             "content-type": "application/json",
             "authorization": "Bearer " + service,
           },
-          body: JSON.stringify({ mode, events: x.events }),
+          body: JSON.stringify({
+            mode,
+            events: x.events,
+            comment_id: x.comment_id,
+          }),
         }),
       );
     } catch {
