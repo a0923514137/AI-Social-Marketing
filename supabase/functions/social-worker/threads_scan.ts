@@ -1,5 +1,6 @@
 import {
   deliver,
+  eligible,
   graphDelivery,
   matchRule,
   normalize,
@@ -23,7 +24,11 @@ export default async function threadsScan(req: Request) {
   if (!base || !token) {
     return Response.json({ error: "missing_configuration" }, { status: 503 });
   }
-  const { mode = "preview" } = await req.json();
+  const input = await req.json().catch(() => null);
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return Response.json({ error: "invalid_payload" }, { status: 400 });
+  }
+  const { mode = "preview" } = input;
   if (!["preview", "scan_preview", "scan"].includes(mode)) {
     return Response.json({ error: "invalid_mode" }, { status: 400 });
   }
@@ -71,13 +76,19 @@ export default async function threadsScan(req: Request) {
       graph("me?fields=id,username"),
       graph("me/threads?fields=id&limit=10"),
     ]);
-    const own = normalize(String(me.data?.username || ""));
+    const own = typeof me.data?.username === "string"
+      ? normalize(me.data.username)
+      : "";
     if (
       !me.response.ok || !own || !posts.response.ok ||
       !Array.isArray(posts.data?.data)
     ) throw Error("threads_read_failed");
 
-    let scanned = 0, matched = 0, scanFailures = 0;
+    let scanned = 0, matched = 0, eligibleMatches = 0, scanFailures = 0;
+    let truncated = posts.data.data.length > 10 ||
+      Boolean(posts.data.paging?.next);
+    const seenPosts = new Set<string>();
+    const seenReplies = new Set<string>();
     const outcomes = {
       sent: 0,
       failed: 0,
@@ -91,7 +102,8 @@ export default async function threadsScan(req: Request) {
         break;
       }
       const post = String(item?.id || "");
-      if (!/^\d+$/.test(post)) continue;
+      if (!/^\d+$/.test(post) || seenPosts.has(post)) continue;
+      seenPosts.add(post);
       const replies = await graph(
         post + "/replies?fields=id,text,username,timestamp&limit=50",
       ).catch(() => null);
@@ -99,6 +111,8 @@ export default async function threadsScan(req: Request) {
         scanFailures++;
         continue;
       }
+      truncated ||= replies.data.data.length > 50 ||
+        Boolean(replies.data.paging?.next);
       for (const c of replies.data.data.slice(0, 50)) {
         if (Date.now() >= deadline) {
           scanFailures++;
@@ -106,11 +120,16 @@ export default async function threadsScan(req: Request) {
         }
         scanned++;
         const comment = String(c?.id || "");
-        const username = normalize(String(c?.username || ""));
-        if (!/^\d+$/.test(comment) || !username || username === own) continue;
+        if (!/^\d+$/.test(comment) || seenReplies.has(comment)) continue;
+        seenReplies.add(comment);
+        const username = typeof c?.username === "string"
+          ? normalize(c.username)
+          : "";
+        if (!username || username === own) continue;
         const rule = matchRule(rules, post, String(c.text || ""));
         if (!rule) continue;
         matched++;
+        if (eligible(c.timestamp, activation)) eligibleMatches++;
         if (mode !== "scan") continue;
         const result = await deliver(db, {
           platform: "threads",
@@ -135,7 +154,9 @@ export default async function threadsScan(req: Request) {
       mode,
       scanned,
       matched,
+      eligible_matches: eligibleMatches,
       scanFailures,
+      partial: truncated || scanFailures > 0,
       ...outcomes,
       production: "NO_GO",
     });
