@@ -42,6 +42,8 @@ export async function handleAdmin(req: Request): Promise<Response> {
   );
   if (event) {
     try {
+      const notificationsEnabled =
+        Deno.env.get("SOCIAL_TELEGRAM_ENABLED") === "true";
       const handled = await management(event, {
         base: url,
         service,
@@ -49,10 +51,15 @@ export async function handleAdmin(req: Request): Promise<Response> {
         chat,
         update: u.update_id,
         bot: Deno.env.get("TELEGRAM_BOT_TOKEN") || "",
+        notificationsEnabled,
         callback: typeof cb?.id === "string" ? cb.id : undefined,
       });
       if (handled) {
-        return j({ accepted: true, action: event.action, notified: true });
+        return j({
+          accepted: true,
+          action: event.action,
+          notified: notificationsEnabled,
+        });
       }
     } catch {
       console.warn("telegram_management_failed");

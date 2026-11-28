@@ -14,7 +14,9 @@ export async function handleReview(req: Request): Promise<Response> {
   return {ok:r.ok,status:r.status,data:await r.json().catch(()=>null)};
  };
  const send=async(text:string,buttons?:any)=>{
-  if(!bot||!chat)return false;
+  if (Deno.env.get("SOCIAL_TELEGRAM_ENABLED") !== "true" || !bot || !chat) {
+    return false;
+  }
   const r=await fetch("https://api.telegram.org/bot"+bot+"/sendMessage",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({chat_id:chat,text,reply_markup:buttons?{inline_keyboard:buttons}:undefined})});
   return r.ok;
  };

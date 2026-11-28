@@ -154,10 +154,14 @@ export async function management(event: Event, context: {
   chat: string;
   update: number;
   bot: string;
+  notificationsEnabled: boolean;
   callback?: string;
 }) {
-  if (!context.bot) throw Error("bot_not_configured");
+  if (context.notificationsEnabled && !context.bot) {
+    throw Error("bot_not_configured");
+  }
   async function telegram(method: string, body: unknown) {
+    if (!context.notificationsEnabled) return;
     let response: Response;
     try {
       response = await fetch(
