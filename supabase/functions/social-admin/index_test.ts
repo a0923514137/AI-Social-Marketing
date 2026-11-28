@@ -1,6 +1,26 @@
 import assert from "node:assert/strict";
+import { parseCommand } from "./commands.ts";
 import { handleAdmin } from "./index.ts";
 import { handleReview } from "./review.ts";
+
+Deno.test("direct keyword commands validate normalized Unicode code points", () => {
+  const keyword = "𠀀".repeat(100);
+  assert.deepEqual(parseCommand("/add " + keyword + " | 測試"), {
+    action: "add",
+    keyword,
+    reply: "測試",
+  });
+  assert.deepEqual(parseCommand("/delete " + keyword), {
+    action: "delete",
+    keyword,
+  });
+  assert.deepEqual(parseCommand("/edit " + keyword + "字 | 測試"), {
+    action: "invalid",
+  });
+  assert.deepEqual(parseCommand("/delete " + "ﬃ".repeat(34)), {
+    action: "invalid",
+  });
+});
 
 Deno.test("keyword management authorizes mutations before the notification gate", async (t) => {
   const configuration = {
@@ -22,6 +42,7 @@ Deno.test("keyword management authorizes mutations before the notification gate"
   const telegramRequests: (RequestInit | undefined)[] = [];
 
   const draftId = "12afb820-ee77-4a17-8e8f-e6fe67cb65e9";
+  let globalKeyword = false;
 
   function webhook(
     secret: string,
@@ -69,6 +90,16 @@ Deno.test("keyword management authorizes mutations before the notification gate"
         return Promise.resolve(Response.json({ kind: "off" }));
       }
       if (url.origin === configuration.SUPABASE_URL) {
+        if (url.pathname === "/rest/v1/social_keywords") {
+          calls.push("keyword_lookup");
+          assert.equal(url.searchParams.get("id"), "eq." + draftId);
+          return Promise.resolve(Response.json([{
+            id: draftId,
+            keyword: "測試",
+            reply_text: "已收到",
+            global_enabled: globalKeyword,
+          }]));
+        }
         if (url.pathname === "/rest/v1/r53_draft_reviews") {
           assert.equal(url.searchParams.get("id"), "eq." + draftId);
           if (init?.method === "GET") {
@@ -181,7 +212,66 @@ Deno.test("keyword management authorizes mutations before the notification gate"
           action: "off",
           notified: true,
         });
-        assert.deepEqual(calls, ["answerCallbackQuery", "rpc", "sendMessage"]);
+        assert.deepEqual(calls, ["rpc", "sendMessage", "answerCallbackQuery"]);
+      },
+    );
+
+    await t.step(
+      "switch-off succeeds with absent or failing Telegram notification",
+      async () => {
+        Deno.env.set("SOCIAL_TELEGRAM_ENABLED", "true");
+        for (const bot of ["", configuration.TELEGRAM_BOT_TOKEN]) {
+          calls.length = 0;
+          Deno.env.set("TELEGRAM_BOT_TOKEN", bot);
+          telegramResponse = () =>
+            Promise.reject(new TypeError("mock fetch failure"));
+          const response = await webhook(
+            configuration.R53_TELEGRAM_WEBHOOK_SECRET,
+          );
+          assert.equal(response.status, 200);
+          assert.deepEqual(await response.json(), {
+            accepted: true,
+            action: "off",
+            notified: false,
+          });
+          assert.deepEqual(
+            calls,
+            bot ? ["rpc", "sendMessage", "answerCallbackQuery"] : ["rpc"],
+          );
+        }
+      },
+    );
+
+    await t.step(
+      "keyword details show the four global platforms or the post-only scope",
+      async () => {
+        Deno.env.set("SOCIAL_TELEGRAM_ENABLED", "true");
+        Deno.env.set("TELEGRAM_BOT_TOKEN", configuration.TELEGRAM_BOT_TOKEN);
+        telegramResponse = () => Promise.resolve(Response.json({ ok: true }));
+        for (const enabled of [false, true]) {
+          globalKeyword = enabled;
+          calls.length = 0;
+          telegramRequests.length = 0;
+          const response = await webhook(
+            configuration.R53_TELEGRAM_WEBHOOK_SECRET,
+            17,
+            -99,
+            "kw:pick_view:" + draftId,
+          );
+          assert.equal(response.status, 200);
+          assert.deepEqual(calls, [
+            "keyword_lookup",
+            "sendMessage",
+            "answerCallbackQuery",
+          ]);
+          const message = JSON.parse(String(telegramRequests[0]?.body));
+          assert.equal(
+            message.text,
+            "關鍵字：測試\n適用範圍：" +
+              (enabled ? "全域（FB、IG、Threads、YouTube）" : "僅指定貼文") +
+              "\n\n回覆內容：\n已收到",
+          );
+        }
       },
     );
 

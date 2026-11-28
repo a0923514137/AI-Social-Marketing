@@ -23,6 +23,8 @@ const button = (text: string, action: string) => ({
   callback_data: "kw:" + action,
 });
 const menu = button("返回選單", "menu");
+const scope = (item: Item) =>
+  item.global_enabled ? "全域（FB、IG、Threads、YouTube）" : "僅指定貼文";
 
 export function managementEvent(
   text: string | undefined,
@@ -80,10 +82,10 @@ function render(result: Result): { text: string; buttons: Button[][] } | null {
     const items = result.items ?? [];
     const offset = result.offset ?? 0;
     const page = items.slice(0, 8);
-    const scope = (item: Item) => item.global_enabled ? "" : "（指定貼文）";
     const rows = page.map((item) => [
       button(
-        Array.from(item.keyword).slice(0, 48).join("") + scope(item),
+        Array.from(item.keyword).slice(0, 48).join("") +
+          (item.global_enabled ? "（全域）" : "（指定貼文）"),
         (kind === "list" ? "pick_view:" : kind === "choose_edit" ? "pick_edit:" : "pick_delete:") + item.id,
       ),
     ]);
@@ -124,12 +126,12 @@ function render(result: Result): { text: string; buttons: Button[][] } | null {
     bad_keyword: "請輸入 1 至 100 字的關鍵字。",
     bad_reply: "請輸入 1 至 500 字的回覆文字。",
     await_confirm: "請使用確認或取消按鈕。",
-    added: "已新增。IG、FB、Threads 共用此回覆；YouTube 整合候選待驗收。",
-    edited: "已更新。三平台及符合條件的指定貼文共用新回覆；YouTube 整合候選待驗收。",
+    added: "已新增全域關鍵字。FB、IG、Threads、YouTube 共用此回覆。",
+    edited: "已更新回覆文字，沿用此關鍵字的適用範圍。",
     deleted: "已刪除關鍵字及其指定貼文設定。",
     exists: "這個關鍵字已存在。請選擇修改回覆內容。",
-    on: "已開啟三平台資料庫發送開關。實際發送仍受部署環境開關控制。",
-    off: "已暫停三平台新回覆。",
+    on: "已開啟 FB、IG、Threads、YouTube 的共用資料庫發送開關。實際發送仍須通過各平台的發送條件。",
+    off: "已關閉 FB、IG、Threads、YouTube 的共用資料庫發送開關。",
     invalid:
       "指令格式有誤。可用選單，或輸入 /add 關鍵字 | 回覆、/edit 關鍵字 | 新回覆、/delete 關鍵字。",
     stale: "操作已過期或關鍵字已有變更，請返回選單重試。",
@@ -156,12 +158,9 @@ export async function management(event: Event, context: {
   bot: string;
   notificationsEnabled: boolean;
   callback?: string;
-}) {
-  if (context.notificationsEnabled && !context.bot) {
-    throw Error("bot_not_configured");
-  }
+}): Promise<boolean | null> {
   async function telegram(method: string, body: unknown) {
-    if (!context.notificationsEnabled) return;
+    if (!context.notificationsEnabled || !context.bot) return false;
     let response: Response;
     try {
       response = await fetch(
@@ -176,39 +175,43 @@ export async function management(event: Event, context: {
       );
     } catch (e) {
       console.warn(JSON.stringify({stage:"telegram_api",method,action:event.action,update:context.update,outcome:e instanceof Error && ["TimeoutError","AbortError"].includes(e.name) ? "timeout" : "network_error"}));
-      throw Error("telegram_notification_failed");
+      return false;
     }
     const payload = await response.json().catch(() => null);
     const ok = response.ok && payload?.ok === true;
     console.log(JSON.stringify({stage:"telegram_api",method,action:event.action,update:context.update,http_status:response.status,api_error_code:typeof payload?.error_code==="number"?payload.error_code:null,retry_after:typeof payload?.parameters?.retry_after==="number"?payload.parameters.retry_after:null,ok}));
-    if (!ok) throw Error("telegram_notification_failed");
+    return ok;
   }
-  if (context.callback) {
-    await telegram("answerCallbackQuery", {
-      callback_query_id: context.callback,
-    }).catch(() => {});
+
+  async function notify(message: { text: string; buttons: Button[][] }) {
+    const [notified] = await Promise.all([
+      telegram("sendMessage", {
+        chat_id: context.chat,
+        text: message.text,
+        reply_markup: { inline_keyboard: message.buttons },
+      }),
+      context.callback
+        ? telegram("answerCallbackQuery", { callback_query_id: context.callback })
+        : undefined,
+    ]);
+    return notified;
   }
   if (event.action === "invalid") {
-    const message = render({ kind: "invalid" })!;
-    await telegram("sendMessage", {
-      chat_id: context.chat,
-      text: message.text,
-      reply_markup: { inline_keyboard: message.buttons },
-    });
-    return true;
+    return notify(render({ kind: "invalid" })!);
   }
   if (event.action === "pick_view") {
     const id = event.value ?? "";
-    if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id)) return false;
+    if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id)) return null;
     const [item] = await socialDatabase(context.base, context.service).rest<Item[]>(
       "social_keywords?" + new URLSearchParams({id:"eq."+id,select:"id,keyword,reply_text,global_enabled",limit:"1"}),
     );
-    await telegram("sendMessage", {
-      chat_id: context.chat,
-      text: item ? "關鍵字："+item.keyword+"\n\n回覆內容：\n"+item.reply_text : "關鍵字不存在，請返回清單。",
-      reply_markup: {inline_keyboard:[[button("返回關鍵字清單","list")],[menu]]},
+    return notify({
+      text: item
+        ? "關鍵字：" + item.keyword + "\n適用範圍：" + scope(item) +
+          "\n\n回覆內容：\n" + item.reply_text
+        : "關鍵字不存在，請返回清單。",
+      buttons: [[button("返回關鍵字清單", "list")], [menu]],
     });
-    return true;
   }
   const result = await socialDatabase(context.base, context.service).rpc<
     Result
@@ -221,11 +224,5 @@ export async function management(event: Event, context: {
     p_reply: event.reply ?? null,
   });
   const message = render(result);
-  if (!message) return false;
-  await telegram("sendMessage", {
-    chat_id: context.chat,
-    text: message.text,
-    reply_markup: { inline_keyboard: message.buttons },
-  });
-  return true;
+  return message ? notify(message) : null;
 }

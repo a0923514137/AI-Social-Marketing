@@ -44,7 +44,7 @@ export async function handleAdmin(req: Request): Promise<Response> {
     try {
       const notificationsEnabled =
         Deno.env.get("SOCIAL_TELEGRAM_ENABLED") === "true";
-      const handled = await management(event, {
+      const notified = await management(event, {
         base: url,
         service,
         actor: owner,
@@ -54,11 +54,11 @@ export async function handleAdmin(req: Request): Promise<Response> {
         notificationsEnabled,
         callback: typeof cb?.id === "string" ? cb.id : undefined,
       });
-      if (handled) {
+      if (notified !== null) {
         return j({
           accepted: true,
           action: event.action,
-          notified: notificationsEnabled,
+          notified,
         });
       }
     } catch {
