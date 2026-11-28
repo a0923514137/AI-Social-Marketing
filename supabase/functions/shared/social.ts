@@ -92,9 +92,14 @@ const targetEnv: Record<Platform, string> = {
   threads: "SOCIAL_THREADS_SINGLE_TEST_COMMENT_ID",
 };
 
+export function configuredSendTarget(platform: Platform): string | null {
+  const target = Deno.env.get(targetEnv[platform]);
+  return target?.trim() ? target : null;
+}
+
 export function sendTargetConfigured(platform: Platform, comment: unknown) {
-  return typeof comment === "string" && comment.trim().length > 0 &&
-    sendConfigured(platform) && Deno.env.get(targetEnv[platform]) === comment;
+  return typeof comment === "string" && sendConfigured(platform) &&
+    configuredSendTarget(platform) === comment;
 }
 
 export function eligible(timestamp: unknown, activation: string | null) {

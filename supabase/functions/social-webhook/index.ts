@@ -1,9 +1,9 @@
 import {
+  configuredSendTarget,
   deliver,
   graphDelivery,
   matchRule,
   normalize,
-  sendConfigured,
   sendTargetConfigured,
   socialDatabase,
 } from "../shared/social.ts";
@@ -76,6 +76,7 @@ export async function handleWebhook(req: Request): Promise<Response> {
     : null;
   if (!platform) return text("unsupported_object", 400);
   const ig = platform === "instagram";
+  const target = configuredSendTarget(platform);
 
   const account = Deno.env.get(ig ? "IG_BUSINESS_ACCOUNT_ID" : "FB_PAGE_ID") ||
     "";
@@ -107,7 +108,9 @@ export async function handleWebhook(req: Request): Promise<Response> {
   try {
     const [rules, activation] = await Promise.all([
       db.rules(platform),
-      token && sendConfigured(platform) ? db.activation() : null,
+      token && sendTargetConfigured(platform, target)
+        ? db.activation()
+        : null,
     ]);
     for (const entry of Array.isArray(data.entry) ? data.entry : []) {
       if (String(entry?.id) !== account || !Array.isArray(entry?.changes)) {
@@ -150,7 +153,10 @@ export async function handleWebhook(req: Request): Promise<Response> {
         );
         if (!rule) continue;
         matched++;
-        if (!activation || !token || !sendTargetConfigured(platform, id)) {
+        if (
+          !activation || !token || id !== target ||
+          !sendTargetConfigured(platform, id)
+        ) {
           continue;
         }
 

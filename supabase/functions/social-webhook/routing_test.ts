@@ -1,3 +1,4 @@
+import { handleLegacyWebhook } from "../meta-webhook/index.ts";
 import { handleRequest } from "../social-worker/index.ts";
 import { handleWebhook } from "./index.ts";
 
@@ -220,6 +221,9 @@ Deno.test("FB and IG single test routes publish one shared claim per target", as
           init.body.get("message") === "offline reply"
         ) {
           replies.push(path);
+          if (path === "/v22.0/31/comments") {
+            Deno.env.set("SOCIAL_FB_SINGLE_TEST_COMMENT_ID", "32");
+          }
           return Response.json({ id: "offline-reply-id" });
         }
         if (init?.method === "GET") {
@@ -312,6 +316,7 @@ Deno.test("FB and IG single test routes publish one shared claim per target", as
         throw Error("IG worker must publish exactly the explicit target");
       }
       for (const platform of [true, false, false]) {
+        Deno.env.set("SOCIAL_FB_SINGLE_TEST_COMMENT_ID", "31");
         const response = await webhook(platform);
         if (
           response.status !== 200 || await response.text() !== "EVENT_RECEIVED"
@@ -327,6 +332,199 @@ Deno.test("FB and IG single test routes publish one shared claim per target", as
         reads.includes("/v22.0/41") || unexpected.length
       ) {
         throw Error("Meta sent or read a non-target, or a duplicate was sent");
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+Deno.test("legacy Meta single test snapshots the target and rechecks gates before publishing", async () => {
+  const baseline = "2024-01-01T00:00:00.000Z";
+  const created = Date.parse("2024-01-02T00:00:00.000Z") / 1000;
+  await withMockedEnv({
+    FB_APP_SECRET: secret,
+    IG_APP_SECRET: secret,
+    FB_WEBHOOK_VERIFY_TOKEN: "offline-challenge-token",
+    FB_PAGE_ID: "11",
+    FB_PAGE_ACCESS_TOKEN: "offline-facebook-token",
+    IG_BUSINESS_ACCOUNT_ID: "22",
+    IG_USERNAME: "offline-account",
+    INSTAGRAM_ACCESS_TOKEN: "offline-instagram-token",
+    SUPABASE_URL: "https://database.example.invalid",
+    SUPABASE_SERVICE_ROLE_KEY: "offline-service-key",
+    SOCIAL_SEND_ENABLED: "true",
+    SOCIAL_FB_SEND_ENABLED: "true",
+    SOCIAL_IG_SEND_ENABLED: "true",
+    SOCIAL_FB_SINGLE_TEST_COMMENT_ID: "31",
+    SOCIAL_IG_SINGLE_TEST_COMMENT_ID: "41",
+  }, async () => {
+    const originalFetch = globalThis.fetch;
+    const claims = new Set<string>();
+    const sent: string[] = [];
+    const states: string[] = [];
+    const unexpected: string[] = [];
+    let onClaim = () => {};
+    let enabled = true;
+    let sharedEnabled = true;
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(String(input));
+      if (url.origin === "https://database.example.invalid") {
+        switch (url.pathname) {
+          case "/rest/v1/r54_reply_templates":
+            return Response.json([{ keyword: "info", reply_text: "yes" }]);
+          case "/rest/v1/r54_reply_controls":
+            return Response.json([{
+              send_enabled: enabled,
+              reply_baseline_at: baseline,
+            }]);
+          case "/rest/v1/social_reply_switch":
+            return Response.json([{
+              enabled: sharedEnabled,
+              activated_at: baseline,
+            }]);
+          case "/rest/v1/r54_reply_claims": {
+            const body = JSON.parse(String(init?.body));
+            if (init?.method === "PATCH") {
+              states.push(body.state + ":" + (body.error_code ?? ""));
+              return Response.json([{}]);
+            }
+            if (init?.method === "POST") {
+              if (claims.has(body.comment_id)) return Response.json([]);
+              claims.add(body.comment_id);
+              onClaim();
+              return Response.json([{}]);
+            }
+            break;
+          }
+        }
+      }
+      if (
+        url.origin === "https://graph.facebook.com" && init?.method === "POST"
+      ) {
+        sent.push(url.pathname);
+        Deno.env.set("SOCIAL_FB_SINGLE_TEST_COMMENT_ID", "32");
+        return Response.json({ id: "offline-reply-id" });
+      }
+      unexpected.push(url.pathname);
+      throw Error("unexpected legacy request");
+    };
+
+    const fb = async (ids: string[]) => {
+      const response = await handleLegacyWebhook(
+        await signedRequest(JSON.stringify({
+          object: "page",
+          entry: [{
+            id: "11",
+            changes: ids.map((id) => ({
+              field: "feed",
+              value: {
+                item: "comment",
+                verb: "add",
+                comment_id: id,
+                from: { id: "51" },
+                post_id: "11_37",
+                message: "info please",
+                created_time: created,
+              },
+            })),
+          }],
+        })),
+      );
+      if (
+        response.status !== 200 || await response.text() !== "EVENT_RECEIVED"
+      ) {
+        throw Error("legacy FB event was not acknowledged");
+      }
+    };
+
+    try {
+      const challenge = await handleLegacyWebhook(
+        new Request(
+          "https://webhook.example.invalid?hub.mode=subscribe&hub.verify_token=offline-challenge-token&hub.challenge=123",
+        ),
+      );
+      if (challenge.status !== 200 || await challenge.text() !== "123") {
+        throw Error("legacy challenge stopped working");
+      }
+
+      Deno.env.delete("SOCIAL_FB_SINGLE_TEST_COMMENT_ID");
+      await fb(["31", "32"]);
+      if (claims.size || sent.length) {
+        throw Error("legacy preview claimed or sent");
+      }
+
+      Deno.env.set("SOCIAL_FB_SINGLE_TEST_COMMENT_ID", "31");
+      sharedEnabled = false;
+      await fb(["31"]);
+      if (claims.size || sent.length) throw Error("legacy ignored shared off");
+      sharedEnabled = true;
+      await fb(["31", "32"]);
+      Deno.env.set("SOCIAL_FB_SINGLE_TEST_COMMENT_ID", "31");
+      await fb(["31"]);
+      if (
+        [...claims].join(",") !== "31" ||
+        sent.join(",") !== "/v22.0/31/comments"
+      ) {
+        throw Error(
+          "legacy FB target rotated within a verified event or sent twice",
+        );
+      }
+
+      const interrupted = [
+        () => Deno.env.set("SOCIAL_FB_SINGLE_TEST_COMMENT_ID", "32"),
+        () => Deno.env.set("SOCIAL_FB_SEND_ENABLED", "false"),
+        () => Deno.env.set("SOCIAL_SEND_ENABLED", "false"),
+        () => {
+          enabled = false;
+        },
+        () => {
+          sharedEnabled = false;
+        },
+      ];
+      for (const [index, interrupt] of interrupted.entries()) {
+        const id = String(33 + index);
+        Deno.env.set("SOCIAL_FB_SINGLE_TEST_COMMENT_ID", id);
+        Deno.env.set("SOCIAL_FB_SEND_ENABLED", "true");
+        Deno.env.set("SOCIAL_SEND_ENABLED", "true");
+        enabled = true;
+        sharedEnabled = true;
+        onClaim = interrupt;
+        await fb([id, "32"]);
+      }
+
+      enabled = true;
+      sharedEnabled = true;
+      onClaim = () => {};
+      const ig = await handleLegacyWebhook(
+        await signedRequest(JSON.stringify({
+          object: "instagram",
+          entry: [{
+            id: "22",
+            changes: [{
+              field: "comments",
+              value: {
+                id: "41",
+                from: { id: "52", username: "visitor" },
+                media: { id: "47" },
+                text: "info please",
+                created_time: created,
+              },
+            }],
+          }],
+        })),
+      );
+      if (
+        ig.status !== 200 || await ig.text() !== "EVENT_RECEIVED" ||
+        [...claims].join(",") !== "31,33,34,35,36,37" ||
+        sent.join(",") !== "/v22.0/31/comments" ||
+        states.join(",") !== [
+            "sent:",
+            ...Array(5).fill("failed:disabled_before_send"),
+          ].join(",") ||
+        unexpected.length
+      ) {
+        throw Error("legacy recheck sent despite a closed gate or enabled IG");
       }
     } finally {
       globalThis.fetch = originalFetch;

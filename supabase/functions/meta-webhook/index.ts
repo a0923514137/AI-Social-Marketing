@@ -1,7 +1,13 @@
+import {
+  configuredSendTarget,
+  sendTargetConfigured,
+  socialDatabase,
+} from "../shared/social.ts";
+
 const txt=(s:string,status=200)=>new Response(s,{status,headers:{"content-type":"text/plain; charset=utf-8","cache-control":"no-store"}});
 const equal=(a:string,b:string)=>{const x=new TextEncoder().encode(a),y=new TextEncoder().encode(b);let d=x.length^y.length;for(let i=0;i<Math.max(x.length,y.length);i++)d|=(x[i]||0)^(y[i]||0);return d===0};
 const hex=(b:ArrayBuffer)=>Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,"0")).join("");
-Deno.serve(async(req)=>{
+export async function handleLegacyWebhook(req: Request): Promise<Response> {
  const verify=Deno.env.get("FB_WEBHOOK_VERIFY_TOKEN")||"";
  const appSecret=Deno.env.get("FB_APP_SECRET")||"";
  if(req.method==="GET"){
@@ -26,6 +32,7 @@ Deno.serve(async(req)=>{
  const entries=Array.isArray(data.entry)?data.entry:[];
  const feedChanges=entries.flatMap((e:any)=>Array.isArray(e.changes)?e.changes:[]).filter((c:any)=>c.field==="feed");
  const platform=data.object==="instagram"?"instagram":"facebook";
+ const target = configuredSendTarget(platform);
  const igId=Deno.env.get("IG_BUSINESS_ACCOUNT_ID")||"";
  const fbId=Deno.env.get("FB_PAGE_ID")||"";
  const igUsername=(Deno.env.get("IG_USERNAME")||"").toLowerCase();
@@ -46,34 +53,33 @@ Deno.serve(async(req)=>{
  const norm=(s:string)=>s.normalize("NFKC").toLocaleLowerCase().trim();
  const headers={apikey:service,Authorization:"Bearer "+service,"Content-Type":"application/json"};
  const token=Deno.env.get(platform==="instagram"?"INSTAGRAM_ACCESS_TOKEN":"FB_PAGE_ACCESS_TOKEN")||"";
- let enabled = false;
-let replyBaselineAt = NaN;
-
-if (token && service && base) {
-  try {
-    const r = await fetch(
-      base + "/rest/v1/r54_reply_controls?platform=eq." +
-      platform + "&select=send_enabled,reply_baseline_at",
-      { headers, signal: AbortSignal.timeout(5000) }
-    );
-
-    if (r.ok) {
-      const control = (await r.json())[0];
-
-      replyBaselineAt = Date.parse(
-        control?.reply_baseline_at || ""
-      );
-
-      enabled =
-        Deno.env.get("SOCIAL_SEND_ENABLED") === "true" &&
-        control?.send_enabled === true &&
-        Number.isFinite(replyBaselineAt) &&
-        replyBaselineAt <= Date.now();
-    }
-  } catch {
-    enabled = false;
-  }
-}
+ async function readLegacyBaseline(): Promise<number | null> {
+   try {
+     const response = await fetch(
+       base + "/rest/v1/r54_reply_controls?platform=eq." +
+         platform + "&select=send_enabled,reply_baseline_at",
+       { headers, signal: AbortSignal.timeout(5000) },
+     );
+     if (!response.ok) return null;
+     const rows = await response.json();
+     if (!Array.isArray(rows) || rows.length !== 1) return null;
+     const [control] = rows;
+     const baseline = Date.parse(control?.reply_baseline_at || "");
+     return control?.send_enabled === true && Number.isFinite(baseline) &&
+         baseline <= Date.now()
+       ? baseline
+       : null;
+   } catch {
+     return null;
+   }
+ }
+ const readSharedActivation = () =>
+   socialDatabase(base, service).activation().catch(() => null);
+ const [replyBaselineAt, activation] =
+   token && service && base && sendTargetConfigured(platform, target)
+     ? await Promise.all([readLegacyBaseline(), readSharedActivation()])
+     : [null, null];
+ const enabled = replyBaselineAt !== null && activation !== null;
  const seen=new Set<string>();let matched=0,sent=0;
  for(const c of comments){
    const id=String(c.comment_id||""),author=String(c.from?.id||""),message=String(c.message||"");
@@ -81,51 +87,78 @@ if (token && service && base) {
    seen.add(id);
    const match=templates.filter((t:any)=>norm(String(t.keyword||""))&&norm(message).includes(norm(String(t.keyword||"")))).sort((a:any,b:any)=>String(b.keyword).length-String(a.keyword).length)[0];
    if(!match)continue;
- matched++;
- if (!enabled) continue;
+   matched++;
+   if (
+     replyBaselineAt === null || activation === null || id !== target ||
+     !sendTargetConfigured(platform, id)
+   ) continue;
 
-// Historical comment safety guard.
-let commentCreatedAt = NaN;
-
-if (platform === "facebook") {
-  const createdTime = c.created_time;
-
-  if (
-    typeof createdTime === "number" &&
-    Number.isSafeInteger(createdTime) &&
-    createdTime > 0
-  ) {
-    commentCreatedAt = createdTime * 1000;
-  }
-}
-
-if (
-  !Number.isFinite(commentCreatedAt) ||
-  commentCreatedAt < replyBaselineAt ||
-  commentCreatedAt > Date.now()
-) {
-  console.log(JSON.stringify({
-    event: "reply_baseline_blocked",
-    platform,
-    comment_id: id
-  }));
-  continue;
-}
+   // The legacy payload supplies a trusted comment timestamp only for Facebook.
+   const createdTime = c.created_time;
+   const commentCreatedAt =
+     platform === "facebook" && typeof createdTime === "number" &&
+       Number.isSafeInteger(createdTime) && createdTime > 0
+       ? createdTime * 1000
+       : NaN;
+   if (
+     !Number.isFinite(commentCreatedAt) ||
+     commentCreatedAt < replyBaselineAt ||
+     commentCreatedAt <= Date.parse(activation) ||
+     commentCreatedAt > Date.now()
+   ) {
+     console.log(JSON.stringify({
+       event: "reply_baseline_blocked",
+       platform,
+       comment_id: id,
+     }));
+     continue;
+   }
  if(platform==="instagram"&&(!/^\d+$/.test(id)||!/^\d+$/.test(String(c.post_id||""))||c.parent_id||String(c.username||"").toLowerCase()===igUsername||(c.self_id&&String(c.self_id)===author)))continue;
  if(platform==="facebook"&&(!/^\d+(_\d+)?$/.test(id)||!new RegExp("^"+fbId+"_\\d+$").test(String(c.post_id||""))||(c.parent_id&&String(c.parent_id)!==String(c.post_id))))continue;
  const endpoint=base+"/rest/v1/r54_reply_claims";
  try{
  const claim=await fetch(endpoint+"?on_conflict=platform,comment_id",{method:"POST",headers:{...headers,Prefer:"resolution=ignore-duplicates,return=representation"},body:JSON.stringify({platform,comment_id:id,post_id:String(c.post_id),state:"sending"}),signal:AbortSignal.timeout(5000)});
  if(!claim.ok){console.log(JSON.stringify({event:"r83_claim_failed",http:claim.status}));continue;}
- if(!(await claim.json()).length)continue;
- let state="uncertain",response_id=null,error_code=null;
- try{
- const rr=await fetch("https://graph.facebook.com/v22.0/"+id+(platform==="instagram"?"/replies":"/comments"),{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({message:match.reply_text}),signal:AbortSignal.timeout(8000)});
- const result=await rr.json();
- if(rr.ok&&result.id){state="sent";response_id=String(result.id);sent++;}
- else{state=rr.status>=500?"uncertain":"failed";error_code=String(result.error?.code||rr.status);}
- }catch{error_code="transport_uncertain";}
- const update=await fetch(endpoint+"?platform=eq."+platform+"&comment_id=eq."+id,{method:"PATCH",headers,body:JSON.stringify({state,response_id,error_code,updated_at:new Date().toISOString()}),signal:AbortSignal.timeout(5000)});
+ const claimed = await claim.json();
+ if (!Array.isArray(claimed) || claimed.length !== 1) continue;
+ let state = "uncertain", response_id = null, error_code = null;
+ try {
+   if (
+     !sendTargetConfigured(platform, id) ||
+     await readLegacyBaseline() !== replyBaselineAt ||
+     await readSharedActivation() !== activation ||
+     !sendTargetConfigured(platform, id)
+   ) {
+     state = "failed";
+     error_code = "disabled_before_send";
+   } else {
+     const response = await fetch(
+       "https://graph.facebook.com/v22.0/" + id +
+         (platform === "instagram" ? "/replies" : "/comments"),
+       {
+         method: "POST",
+         headers: {
+           Authorization: "Bearer " + token,
+           "Content-Type": "application/x-www-form-urlencoded",
+         },
+         body: new URLSearchParams({ message: match.reply_text }),
+         signal: AbortSignal.timeout(8000),
+       },
+     );
+     const result = await response.json();
+     if (response.ok && result.id) {
+       state = "sent";
+       response_id = String(result.id);
+       sent++;
+     } else {
+       state = response.status >= 500 ? "uncertain" : "failed";
+       error_code = String(result.error?.code || response.status);
+     }
+   }
+ } catch {
+   error_code = "transport_uncertain";
+ }
+ const update=await fetch(endpoint+"?platform=eq."+platform+"&comment_id=eq."+id+"&state=eq.sending",{method:"PATCH",headers,body:JSON.stringify({state,response_id,error_code,updated_at:new Date().toISOString()}),signal:AbortSignal.timeout(5000)});
  console.log(JSON.stringify({event:"r83_ig_reply",platform,comment_id:id,state,error_code,ledger_http:update.status}));
  }catch{console.log(JSON.stringify({event:"r83_claim_or_update_uncertain",comment_id:id}));}
 
@@ -133,4 +166,6 @@ if (
  console.log(JSON.stringify({event:"r80_meta_webhook_preview",platform,comment_events:comments.length,unique_comments:seen.size,matched,templates:templates.length,mode:enabled?platform+"_live":"staging_preview_only",sends:sent,production:"NO_GO"}));
  console.log(JSON.stringify({event:"fb_webhook_verified",entry_count:entries.length,mode:enabled?platform+"_live":"staging_receive_only",sends:sent}));
  return txt("EVENT_RECEIVED");
-});
+}
+
+if (import.meta.main) Deno.serve(handleLegacyWebhook);
