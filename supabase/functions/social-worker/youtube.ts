@@ -175,18 +175,23 @@ export function createYoutubePreview({
       new URL(required("SUPABASE_URL")).origin === stagingOrigin;
   }
 
-  async function previewBaseline(channel: string, now: number): Promise<number> {
+  async function channelSettings(channel: string) {
     const query = new URLSearchParams({
       channel_id: "eq." + channel,
-      select: "baseline_at",
+      select: "baseline_at,send_enabled",
     });
-    const rows = await database<{ baseline_at: string }[]>(
+    const rows = await database<{ baseline_at: string; send_enabled: boolean }[]>(
       "r130_youtube_settings?" + query,
     );
     if (!Array.isArray(rows) || rows.length > 1) {
       throw new PreviewError("invalid_baseline");
     }
-    if (rows.length === 1) return Date.parse(rows[0]?.baseline_at ?? "");
+    return rows[0];
+  }
+
+  async function previewBaseline(channel: string, now: number): Promise<number> {
+    const settings = await channelSettings(channel);
+    if (settings !== undefined) return Date.parse(settings?.baseline_at ?? "");
 
     const configured = env("YOUTUBE_REPLY_BASELINE_AT");
     if (!configured) return now;
@@ -301,22 +306,30 @@ export function createYoutubePreview({
     if (!claim.quota_day || !claim.attempted_at) {
       throw new PreviewError("youtube_invalid_reservation");
     }
-    // Keep the POST within the database reservation's Pacific day.
+    let allowed: boolean;
+    try {
+      const [activated, settings] = await Promise.all([
+        globalActivation(),
+        channelSettings(channel),
+      ]);
+      const published = Date.parse(candidate.published_at);
+      allowed = settings?.send_enabled === true &&
+        published > Math.max(activated, Date.parse(settings.baseline_at)) &&
+        sendEnabled(candidate.comment_id);
+    } catch (error) {
+      await finish(channel, candidate.comment_id, "rejected");
+      throw error;
+    }
+    if (!allowed) {
+      await finish(channel, candidate.comment_id, "rejected");
+      return "disabled";
+    }
+    // Keep the POST within the reservation window even if the final reads were slow.
     if (!(Math.abs(clock() - Date.parse(claim.attempted_at)) < 10000)) {
       await finish(channel, candidate.comment_id, "rejected");
       return "reservation_expired";
     }
 
-    try {
-      if (Date.parse(candidate.published_at) <= await globalActivation() ||
-        !sendEnabled(candidate.comment_id)) {
-        await finish(channel, candidate.comment_id, "rejected");
-        return "disabled";
-      }
-    } catch (error) {
-      await finish(channel, candidate.comment_id, "rejected");
-      throw error;
-    }
     let response: Response | undefined;
     try {
       response = await request(api + "comments?part=snippet", {

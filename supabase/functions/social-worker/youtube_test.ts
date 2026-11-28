@@ -71,7 +71,11 @@ function fixture(
     initialStatus = 200,
     hasBaseline = true,
     storedBaseline = undefined as string | undefined,
-    closeGateAtFinalRead = false,
+    changeDuringFinalRead = undefined as
+      | "environment"
+      | "channel"
+      | "clock"
+      | undefined,
     identity = channel,
     sendEnabled = false,
     databaseEnabled = undefined as boolean | undefined,
@@ -90,6 +94,7 @@ function fixture(
   let persistedBaseline = storedBaseline;
   let currentTime = now;
   let gateReads = 0;
+  let channelEnabled = databaseEnabled ?? sendEnabled;
   let setupCalls = 0;
   const claims = new Map<
     string,
@@ -133,11 +138,20 @@ function fixture(
               equal(init?.method ?? "GET", "GET");
               equal(url.searchParams.get("channel_id"), "eq." + channel);
               return json(
-                persistedBaseline ? [{ baseline_at: persistedBaseline }] : [],
+                persistedBaseline
+                  ? [{
+                    baseline_at: persistedBaseline,
+                    send_enabled: channelEnabled,
+                  }]
+                  : [],
               );
             case "social_reply_switch":
-              if (++gateReads === 3 && closeGateAtFinalRead) {
-                env.YOUTUBE_SINGLE_TEST_ENABLED = "false";
+              if (++gateReads === 3) {
+                if (changeDuringFinalRead === "environment") {
+                  env.YOUTUBE_SINGLE_TEST_ENABLED = "false";
+                }
+                if (changeDuringFinalRead === "channel") channelEnabled = false;
+                if (changeDuringFinalRead === "clock") currentTime += 10_000;
               }
               return json([{ enabled: true, activated_at: baseline }]);
             case "r130_youtube_setup":
@@ -146,7 +160,7 @@ function fixture(
                 new Date(currentTime).toISOString();
               return json({
                 baseline_at: persistedBaseline,
-                send_enabled: databaseEnabled ?? sendEnabled,
+                send_enabled: channelEnabled,
               });
             case "r130_youtube_quota":
               equal(init?.method, "PATCH");
@@ -481,12 +495,20 @@ Deno.test("YouTube preview uses a request cutoff without creating settings", asy
   equal(stored.setupCalls(), 0);
 });
 
-Deno.test("YouTube closes a reserved send if the single-test gate changes during final activation read", async () => {
-  const mock = fixture(newComment, {
-    sendEnabled: true,
-    closeGateAtFinalRead: true,
+for (
+  const [change, reason] of [
+    ["environment", "disabled"],
+    ["channel", "disabled"],
+    ["clock", "reservation_expired"],
+  ] as const
+) {
+  Deno.test(`YouTube rejects a reserved send when ${change} changes during final gate checks`, async () => {
+    const mock = fixture(newComment, {
+      sendEnabled: true,
+      changeDuringFinalRead: change,
+    });
+    const result = await mock.preview("run", target);
+    equal(result.delivery, { [reason]: 1 });
+    equal([result.sends, mock.state(), mock.inserts()], [0, "rejected", 0]);
   });
-  const result = await mock.preview("run", target);
-  equal(result.delivery, { disabled: 1 });
-  equal([result.sends, mock.state(), mock.inserts()], [0, "rejected", 0]);
-});
+}
