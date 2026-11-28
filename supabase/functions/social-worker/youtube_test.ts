@@ -82,6 +82,8 @@ function fixture(
     insert = "success",
     failFinishOnce = false,
     existingReply = false,
+    keywordRules = rules,
+    expectedReply = "AI reply",
     project = "vnvrkbeyrhatbnjhglmv.supabase.co",
   } = {},
 ) {
@@ -191,6 +193,7 @@ function fixture(
                   .map(([comment_id, item]) => ({ comment_id, ...item })),
               );
             case "r130_youtube_known":
+              equal(args.p_comments, [target]);
               return json([...claims.keys()]);
             case "r130_youtube_finish": {
               if (failFinishOnce && !finishFailed) {
@@ -206,14 +209,14 @@ function fixture(
           }
           equal(operation, "social_keywords");
           equal(url.searchParams.get("global_enabled"), "eq.true");
-          return json(rules);
+          return json(keywordRules);
         }
         if (url.pathname.endsWith("/comments")) {
           if (init?.method === "POST") {
             inserts++;
             equal(url.searchParams.get("part"), "snippet");
             equal(JSON.parse(String(init.body)), {
-              snippet: { parentId: target, textOriginal: "AI reply" },
+              snippet: { parentId: target, textOriginal: expectedReply },
             });
             if (insert === "rejected") return json({}, { status: 400 });
             if (
@@ -234,7 +237,7 @@ function fixture(
                 snippet: {
                   authorChannelId: { value: channel },
                   publishedAt: new Date(now).toISOString(),
-                  textOriginal: "AI reply",
+                  textOriginal: expectedReply,
                 },
               }]
               : [],
@@ -512,3 +515,30 @@ for (
     equal([result.sends, mock.state(), mock.inserts()], [0, "rejected", 0]);
   });
 }
+
+Deno.test("YouTube sends the longest enabled global keyword reply only to the configured comment", async () => {
+  const mock = fixture({
+    "": {
+      items: [
+        thread("unapproved_comment", "自動化工具"),
+        thread(target, "ＡＩ 自動化工具"),
+        thread("another_comment", "AI"),
+      ],
+    },
+  }, {
+    sendEnabled: true,
+    expectedReply: "Automation reply",
+    keywordRules: [
+      {
+        id: "scoped",
+        keyword: "自動化工具",
+        global_enabled: false,
+        reply_text: "Scoped reply",
+      },
+      ...rules,
+    ],
+  });
+  const result = await mock.preview("run", target);
+  equal(result.checked, 3);
+  equal([result.sends, mock.inserts(), mock.state()], [1, 1, "sent"]);
+});

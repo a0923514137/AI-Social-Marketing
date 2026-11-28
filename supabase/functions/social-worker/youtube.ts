@@ -385,7 +385,7 @@ export function createYoutubePreview({
           p_baseline: env("YOUTUBE_REPLY_BASELINE_AT") ?? null,
         },
       );
-      if (!settings.send_enabled) throw new PreviewError("youtube_send_disabled");
+      if (settings.send_enabled !== true) throw new PreviewError("youtube_send_disabled");
       baseline = Math.max(Date.parse(settings.baseline_at), await globalActivation());
     } else {
       baseline = await previewBaseline(channel, now);
@@ -454,6 +454,7 @@ export function createYoutubePreview({
         checked++;
         const comment = thread.snippet?.topLevelComment;
         const id = comment?.id;
+        if (mode === "run" && id !== target) continue;
         const author = comment?.snippet?.authorChannelId?.value;
         const published = Date.parse(comment?.snippet?.publishedAt ?? "");
         if (!id || !author || !Number.isFinite(published) || published > now) {
@@ -505,18 +506,13 @@ export function createYoutubePreview({
     } while (pageToken && pages < maxPages);
     let sends = 0;
     const delivery: Record<string, number> = {};
-    if (mode === "run" && candidates.length) {
-      const known = new Set(
-        await rpc<string[]>("known", {
-          p_channel: channel,
-          p_comments: candidates.map(({ comment_id }) => comment_id),
-        }),
-      );
-      for (
-        const candidate of candidates.filter(({ comment_id }) =>
-          comment_id === target && !known.has(comment_id)
-        ).slice(0, 1)
-      ) {
+    const candidate = mode === "run" ? candidates[0] : undefined;
+    if (candidate) {
+      const known = await rpc<string[]>("known", {
+        p_channel: channel,
+        p_comments: [candidate.comment_id],
+      });
+      if (!known.includes(candidate.comment_id)) {
         let result: string;
         try {
           result = await deliver(channel, candidate);
@@ -529,12 +525,9 @@ export function createYoutubePreview({
           ) throw error;
           result = "reply_check_failed";
         }
-        delivery[result] = (delivery[result] ?? 0) + 1;
+        delivery[result] = 1;
         if (result === "sent") sends++;
         if (result === "reconciled") reconciled++;
-        if (
-          ["quota", "daily_limit", "disabled", "day_rollover"].includes(result)
-        ) break;
       }
     }
     return {
