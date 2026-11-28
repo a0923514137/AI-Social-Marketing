@@ -4,6 +4,7 @@ import facebookPreview from "./facebook_preview.ts";
 import scan from "./threads_scan.ts";
 import patrol from "./threads_patrol.ts";
 import { handleYoutubePreview } from "./youtube.ts";
+import { handleTikTokPreview } from "./tiktok.ts";
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -140,6 +141,13 @@ export async function handleRequest(
     } catch {
       return json({ error: "preview_failed" }, 502);
     }
+  }
+
+  if (task === "tiktok_poll") {
+    if (mode !== "preview") {
+      return json({ error: "tiktok_preview_only", sends: 0, production: "NO_GO" }, 403);
+    }
+    return handleTikTokPreview();
   }
 
   if (task === "youtube_poll") {

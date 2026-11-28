@@ -2,18 +2,32 @@ import { createYoutubePreview } from "./youtube.ts";
 import { handleRequest } from "./index.ts";
 
 const channel = "channel-owner";
+const target = "new_comment";
 const now = Date.parse("2026-11-26T12:00:00Z");
 const baseline = "2026-11-26T11:55:00Z";
 const rules = [
-  { template_key: "default_ai", keyword: "AI", reply_text: "AI reply" },
   {
-    template_key: "ep03_video_edit",
+    id: "default_ai",
+    keyword: "AI",
+    global_enabled: true,
+    reply_text: "AI reply",
+  },
+  {
+    id: "system",
+    keyword: "系統",
+    global_enabled: true,
+    reply_text: "AI reply",
+  },
+  {
+    id: "ep03_video_edit",
     keyword: "剪片",
+    global_enabled: true,
     reply_text: "Editing reply",
   },
   {
-    template_key: "ep08_automation",
+    id: "ep08_automation",
     keyword: "自動化",
+    global_enabled: true,
     reply_text: "Automation reply",
   },
 ];
@@ -62,7 +76,7 @@ function fixture(
     insert = "success",
     failFinishOnce = false,
     existingReply = false,
-    project = "eziafqttckcdvjxxvxsv.supabase.co",
+    project = "vnvrkbeyrhatbnjhglmv.supabase.co",
   } = {},
 ) {
   let refreshes = 0;
@@ -80,6 +94,7 @@ function fixture(
   const env: Record<string, string> = {
     YOUTUBE_CHANNEL_ID: channel,
     SUPABASE_URL: "https://" + project,
+    SOCIAL_SEND_ENABLED: String(sendEnabled),
     YOUTUBE_SEND_ENABLED: String(sendEnabled),
     SUPABASE_SERVICE_ROLE_KEY: "fixture",
     ...(hasBaseline ? { YOUTUBE_REPLY_BASELINE_AT: baseline } : {}),
@@ -108,6 +123,8 @@ function fixture(
             : {};
           const operation = url.pathname.split("/").at(-1);
           switch (operation) {
+            case "social_reply_switch":
+              return json([{ enabled: true, activated_at: baseline }]);
             case "r130_youtube_setup":
               persistedBaseline ??= args.p_baseline ??
                 new Date(currentTime).toISOString();
@@ -157,8 +174,8 @@ function fixture(
               return json(true);
             }
           }
-          equal(operation, "r54_reply_templates");
-          equal(url.searchParams.get("platform"), "eq.instagram");
+          equal(operation, "social_keywords");
+          equal(url.searchParams.get("global_enabled"), "eq.true");
           return json(rules);
         }
         if (url.pathname.endsWith("/comments")) {
@@ -166,7 +183,7 @@ function fixture(
             inserts++;
             equal(url.searchParams.get("part"), "snippet");
             equal(JSON.parse(String(init.body)), {
-              snippet: { parentId: "new", textOriginal: "AI reply" },
+              snippet: { parentId: target, textOriginal: "AI reply" },
             });
             if (insert === "rejected") return json({}, { status: 400 });
             if (
@@ -179,7 +196,7 @@ function fixture(
             }
             return json({ id: "reply-id" });
           }
-          equal(url.searchParams.get("parentId"), "new");
+          equal(url.searchParams.get("parentId"), target);
           return json({
             items: remoteReply
               ? [{
@@ -220,7 +237,7 @@ function fixture(
     setTime: (value: number) => {
       currentTime = value;
     },
-    state: () => claims.get("new")?.state,
+    state: () => claims.get(target)?.state,
   };
 }
 
@@ -315,35 +332,40 @@ Deno.test("YouTube stops reads on daily quota exhaustion and rejects an OAuth ch
 
 Deno.test("Social worker disables YouTube run by default", async () => {
   const key = "test-only-scheduler-key-1234567890";
+  const previousKey = Deno.env.get("SOCIAL_SCHEDULER_KEY");
   Deno.env.set("SOCIAL_SCHEDULER_KEY", key);
-  Deno.env.delete("YOUTUBE_SEND_ENABLED");
-  const response = await handleRequest(
-    new Request("http://localhost/social-worker", {
-      method: "POST",
-      headers: { "x-social-scheduler-key": key },
-      body: JSON.stringify({ task: "youtube_poll", mode: "run" }),
-    }),
-  );
-  equal(response.status, 403);
-  equal(await response.json(), {
-    error: "youtube_send_disabled",
-    sends: 0,
-    production: "NO_GO",
-  });
+  try {
+    const response = await handleRequest(
+      new Request("http://localhost/social-worker", {
+        method: "POST",
+        headers: { "x-social-scheduler-key": key },
+        body: JSON.stringify({ task: "youtube_poll", mode: "run" }),
+      }),
+    );
+    equal(response.status, 403);
+    equal(await response.json(), {
+      error: "youtube_preview_only",
+      sends: 0,
+      production: "NO_GO",
+    });
+  } finally {
+    if (previousKey === undefined) Deno.env.delete("SOCIAL_SCHEDULER_KEY");
+    else Deno.env.set("SOCIAL_SCHEDULER_KEY", previousKey);
+  }
 });
 
-const newComment = { "": { items: [thread("new", "AI")] } };
+const newComment = { "": { items: [thread(target, "AI")] } };
 
 Deno.test("YouTube two workers post a claimed comment exactly once", async () => {
   const mock = fixture(newComment, { sendEnabled: true });
   const results = await Promise.all([
-    mock.preview("run"),
-    mock.newWorker()("run"),
+    mock.preview("run", target),
+    mock.newWorker()("run", target),
   ]);
   equal(results.reduce((sum, result) => sum + result.sends, 0), 1);
   equal(mock.inserts(), 1);
   equal(mock.state(), "sent");
-  await mock.newWorker()("run");
+  await mock.newWorker()("run", target);
   equal(mock.inserts(), 1);
 });
 
@@ -352,7 +374,7 @@ Deno.test("YouTube timeout after insert is confirmed by listing channel replies"
     sendEnabled: true,
     insert: "timeout_after_commit",
   });
-  const result = await mock.preview("run");
+  const result = await mock.preview("run", target);
   equal([result.sends, result.reconciled, mock.state(), mock.inserts()], [
     0,
     1,
@@ -364,11 +386,11 @@ Deno.test("YouTube timeout after insert is confirmed by listing channel replies"
 Deno.test("YouTube recovers after a successful post followed by a database write failure", async () => {
   const mock = fixture(newComment, { sendEnabled: true, failFinishOnce: true });
   equal(
-    await mock.preview("run").catch((error) => error.message),
+    await mock.preview("run", target).catch((error) => error.message),
     "youtube_database_unavailable",
   );
   equal([mock.state(), mock.inserts()], ["sending", 1]);
-  equal((await mock.newWorker()("run")).reconciled, 1);
+  equal((await mock.newWorker()("run", target)).reconciled, 1);
   equal([mock.state(), mock.inserts()], ["sent", 1]);
 });
 
@@ -377,12 +399,12 @@ Deno.test("YouTube unresolved timeout survives restart and is reconciled without
     sendEnabled: true,
     insert: "timeout_before_commit",
   });
-  await mock.preview("run");
+  await mock.preview("run", target);
   equal(mock.state(), "uncertain");
-  await mock.newWorker()("run");
+  await mock.newWorker()("run", target);
   equal([mock.state(), mock.inserts()], ["uncertain", 1]);
   mock.setReply();
-  equal((await mock.newWorker()("run")).reconciled, 1);
+  equal((await mock.newWorker()("run", target)).reconciled, 1);
   equal([mock.state(), mock.inserts()], ["sent", 1]);
 });
 
@@ -391,14 +413,16 @@ Deno.test("YouTube definitive rejection and existing replies are never reposted"
     sendEnabled: true,
     insert: "rejected",
   });
-  await rejected.preview("run");
-  await rejected.newWorker()("run");
+  await rejected.preview("run", target);
+  await rejected.newWorker()("run", target);
   equal([rejected.state(), rejected.inserts()], ["rejected", 1]);
   const existing = fixture(newComment, {
     sendEnabled: true,
     existingReply: true,
   });
-  equal((await existing.preview("run")).delivery, { existing_reply: 1 });
+  equal((await existing.preview("run", target)).delivery, {
+    existing_reply: 1,
+  });
   equal(existing.inserts(), 0);
 });
 
@@ -410,7 +434,7 @@ Deno.test("YouTube stays disabled outside Staging or with its database switch of
   ) {
     const mock = fixture(newComment, { sendEnabled: true, ...options });
     equal(
-      await mock.preview("run").catch((error) => error.message),
+      await mock.preview("run", target).catch((error) => error.message),
       "youtube_send_disabled",
     );
     equal([mock.reads(), mock.inserts()], [0, 0]);
@@ -421,7 +445,7 @@ Deno.test("YouTube default baseline is fixed across worker restarts", async () =
   const pages = {
     "": {
       items: [
-        thread("new", "AI", {
+        thread(target, "AI", {
           publishedAt: new Date(now + 1000).toISOString(),
         }),
       ],
