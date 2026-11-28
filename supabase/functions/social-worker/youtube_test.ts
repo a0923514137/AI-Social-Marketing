@@ -281,7 +281,7 @@ Deno.test("YouTube preview shares four triggers and filters historical, self and
       items: [
         thread("ai", "ＡＩ"),
         thread("system", "系統"),
-        thread("edit", "AI 剪片"),
+        thread("edit", "剪片 AI"),
         thread("old", "AI", { publishedAt: baseline }),
         thread("self", "AI", { author: channel }),
       ],

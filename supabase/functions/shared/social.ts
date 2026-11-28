@@ -1,3 +1,6 @@
+import { bestKeywordMatch } from "./global_keyword_candidate.ts";
+export { normalize } from "./global_keyword_candidate.ts";
+
 export type Platform = "instagram" | "facebook" | "threads";
 type Rule = {
   keyword: string;
@@ -6,24 +9,16 @@ type Rule = {
   post_ids: string[];
 };
 
-export const normalize = (text: string) =>
-  text.normalize("NFKC").trim().toLowerCase();
-
 export function matchRule(
   rules: Rule[],
   post: string,
   text: string,
 ): Rule | undefined {
-  const normalized = normalize(text);
-  const matching = rules.filter((rule) => {
-    const keyword = normalize(rule.keyword);
-    return keyword && normalized.includes(keyword) &&
-      (rule.post_ids.includes(post) || rule.global);
-  });
-  return matching.sort((a, b) =>
-    Number(b.post_ids.includes(post)) - Number(a.post_ids.includes(post)) ||
-    normalize(b.keyword).length - normalize(a.keyword).length
-  )[0];
+  return bestKeywordMatch(
+    rules.filter((rule) => rule.post_ids.includes(post) || rule.global),
+    text,
+    (rule) => Number(rule.post_ids.includes(post)),
+  );
 }
 
 export function socialDatabase(

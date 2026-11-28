@@ -1,11 +1,52 @@
-// Pure candidate for shared global keyword matching. No network or send side effects.
-export type GlobalKeyword = { id: string; keyword: string; reply_text: string; global_enabled: boolean };
-export function matchGlobalKeyword(rows: GlobalKeyword[], comment: string): GlobalKeyword | undefined {
-  const normalize = (s: string) => s.normalize("NFKC").trim().toLowerCase();
-  const body = normalize(comment);
-  return rows.filter(r => r.global_enabled === true && typeof r.keyword === "string" &&
-    typeof r.reply_text === "string" && normalize(r.keyword).length > 0 &&
-    r.reply_text.trim().length > 0 && body.includes(normalize(r.keyword)))
-    .sort((a,b) => normalize(b.keyword).length - normalize(a.keyword).length ||
-      normalize(a.keyword).localeCompare(normalize(b.keyword)) || a.id.localeCompare(b.id))[0];
+export type GlobalKeyword = {
+  id: string;
+  keyword: string;
+  reply_text: string;
+  global_enabled: boolean;
+};
+
+export const normalize = (text: string) =>
+  text.normalize("NFKC").trim().toLowerCase();
+
+export function bestKeywordMatch<T extends { keyword: string; id?: string }>(
+  rules: T[],
+  text: string,
+  priority: (rule: T) => number = () => 0,
+): T | undefined {
+  const body = normalize(text);
+  let best:
+    | { rule: T; priority: number; length: number; index: number }
+    | undefined;
+  for (const rule of rules) {
+    const keyword = normalize(rule.keyword);
+    if (!keyword) continue;
+    const index = body.indexOf(keyword);
+    if (index < 0) continue;
+
+    const scope = priority(rule);
+    const order = best
+      ? scope - best.priority || keyword.length - best.length ||
+        best.index - index
+      : 0;
+    if (
+      !best || order > 0 ||
+      (order === 0 && (rule.id ?? "") < (best.rule.id ?? ""))
+    ) {
+      best = { rule, priority: scope, length: keyword.length, index };
+    }
+  }
+  return best?.rule;
+}
+
+export function matchGlobalKeyword(
+  rows: GlobalKeyword[],
+  comment: string,
+): GlobalKeyword | undefined {
+  return bestKeywordMatch(
+    rows.filter((rule) =>
+      rule.global_enabled === true && typeof rule.keyword === "string" &&
+      typeof rule.reply_text === "string" && rule.reply_text.trim().length > 0
+    ),
+    comment,
+  );
 }
