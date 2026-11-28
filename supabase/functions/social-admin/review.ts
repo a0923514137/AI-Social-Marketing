@@ -17,8 +17,22 @@ export async function handleReview(req: Request): Promise<Response> {
   if (Deno.env.get("SOCIAL_TELEGRAM_ENABLED") !== "true" || !bot || !chat) {
     return false;
   }
-  const r=await fetch("https://api.telegram.org/bot"+bot+"/sendMessage",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({chat_id:chat,text,reply_markup:buttons?{inline_keyboard:buttons}:undefined})});
-  return r.ok;
+  try {
+    const response = await fetch("https://api.telegram.org/bot" + bot + "/sendMessage", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chat,
+        text,
+        reply_markup: buttons ? { inline_keyboard: buttons } : undefined,
+      }),
+      redirect: "error",
+      signal: AbortSignal.timeout(8000),
+    });
+    return response.ok && (await response.json())?.ok === true;
+  } catch {
+    return false;
+  }
  };
  const id=String(x.draft_id||"");
  if(mode==="preview")return j({mode,buttons:["確認","修改","再次生成","取消"],telegram_configured:!!(owner&&chat&&bot),gpt_configured:!!Deno.env.get("OPENAI_API_KEY"),published:false});

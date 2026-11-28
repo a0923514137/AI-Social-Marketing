@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { handleAdmin } from "./index.ts";
+import { handleReview } from "./review.ts";
 
 Deno.test("keyword management authorizes mutations before the notification gate", async (t) => {
   const configuration = {
@@ -16,6 +17,9 @@ Deno.test("keyword management authorizes mutations before the notification gate"
   );
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
+  let telegramResponse: () => Promise<Response> = () =>
+    Promise.resolve(Response.json({ ok: true }));
+  const telegramRequests: (RequestInit | undefined)[] = [];
 
   const draftId = "12afb820-ee77-4a17-8e8f-e6fe67cb65e9";
 
@@ -89,7 +93,8 @@ Deno.test("keyword management authorizes mutations before the notification gate"
       }
       if (url.origin === "https://api.telegram.org") {
         calls.push(url.pathname.split("/").at(-1)!);
-        return Promise.resolve(Response.json({ ok: true }));
+        telegramRequests.push(init);
+        return telegramResponse();
       }
       throw Error("unexpected mock request");
     };
@@ -177,6 +182,65 @@ Deno.test("keyword management authorizes mutations before the notification gate"
           notified: true,
         });
         assert.deepEqual(calls, ["answerCallbackQuery", "rpc", "sendMessage"]);
+      },
+    );
+
+    await t.step(
+      "legacy review reports only confirmed notification success without failing the draft update",
+      async () => {
+        Deno.env.set("SOCIAL_TELEGRAM_ENABLED", "true");
+        const cases: [() => Promise<Response>, boolean][] = [
+          [() => Promise.resolve(Response.json({ ok: true })), true],
+          [() => Promise.resolve(Response.json({ ok: false })), false],
+          [
+            () => Promise.resolve(Response.json({ ok: true }, { status: 502 })),
+            false,
+          ],
+          [() => Promise.resolve(new Response("invalid json")), false],
+          [() => Promise.reject(new TypeError("mock fetch failure")), false],
+        ];
+        for (const [response, notified] of cases) {
+          calls.length = 0;
+          telegramRequests.length = 0;
+          telegramResponse = response;
+          const result = await handleReview(
+            new Request("https://worker.invalid", {
+              method: "POST",
+              headers: {
+                Authorization: "Bearer " +
+                  configuration.SUPABASE_SERVICE_ROLE_KEY,
+              },
+              body: JSON.stringify({
+                mode: "process_update",
+                draft_id: draftId,
+                update: {
+                  update_id: 22,
+                  callback_query: {
+                    data: "r53:cancel:" + draftId,
+                    from: { id: 17 },
+                    message: { chat: { id: -99 } },
+                  },
+                },
+              }),
+            }),
+          );
+          assert.equal(result.status, 200);
+          assert.deepEqual(await result.json(), {
+            action: "cancel",
+            updated: true,
+            notified,
+            published: false,
+          });
+          assert.deepEqual(calls, [
+            "draft_lookup",
+            "draft_event",
+            "draft_update",
+            "sendMessage",
+          ]);
+          const [request] = telegramRequests;
+          assert.equal(request?.redirect, "error");
+          assert.ok(request?.signal instanceof AbortSignal);
+        }
       },
     );
   } finally {
