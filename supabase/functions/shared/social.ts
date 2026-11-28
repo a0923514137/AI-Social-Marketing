@@ -60,12 +60,14 @@ export function socialDatabase(
   }
 
   async function activation() {
-    const [row] = await rest<
+    const rows = await rest<
       { enabled: boolean; activated_at: string | null }[]
     >(
       "social_reply_switch?singleton=eq.true&select=enabled,activated_at",
     );
-    return row?.enabled && row.activated_at &&
+    if (!Array.isArray(rows) || rows.length !== 1) return null;
+    const [row] = rows;
+    return row?.enabled === true && typeof row.activated_at === "string" &&
         Number.isFinite(Date.parse(row.activated_at))
       ? row.activated_at
       : null;
@@ -117,9 +119,11 @@ export async function deliver(db: SocialDatabase, item: {
 
   let outcome: Delivery;
   try {
-    outcome = sendConfigured(platform) && await db.activation() === activation
-      ? await publish()
-      : { state: "failed", errorCode: "disabled_before_send" };
+    outcome =
+      sendConfigured(platform) && await db.activation() === activation &&
+        sendConfigured(platform)
+        ? await publish()
+        : { state: "failed", errorCode: "disabled_before_send" };
   } catch {
     outcome = { state: "uncertain", errorCode: "delivery_unknown" };
   }
