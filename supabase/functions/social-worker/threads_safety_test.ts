@@ -10,6 +10,8 @@ const scope = {
   THREADS_ACCESS_TOKEN: "test-only-threads-token",
   SOCIAL_SEND_ENABLED: "false",
   SOCIAL_TELEGRAM_ENABLED: "false",
+  TELEGRAM_BOT_TOKEN: "test-only-telegram-token",
+  TELEGRAM_CHAT_ID: "test-only-chat-id",
 };
 
 function equal(actual: unknown, expected: unknown) {
@@ -169,5 +171,72 @@ Deno.test("Threads patrol keeps paging credentials in the authorization header",
     equal(result.post_pages, 2);
     equal(result.partial, false);
     equal(result.sent, 0);
+  });
+});
+
+Deno.test("Threads patrol skips enqueue and claim if sending is disabled during scanning", async () => {
+  await withMock((url) => {
+    switch (url.pathname) {
+      case "/rest/v1/rpc/threads_patrol_baseline":
+        return Response.json(activation);
+      case "/v1.0/me":
+        return Response.json({ username: "owner" });
+      case "/v1.0/me/threads":
+        return Response.json({ data: [{ id: "100" }] });
+      case "/v1.0/100/replies":
+        Deno.env.set("SOCIAL_TELEGRAM_ENABLED", "false");
+        return Response.json({
+          data: [{
+            id: "200",
+            username: "customer",
+            timestamp: "2026-01-03T00:00:00Z",
+            text: "test",
+          }],
+        });
+      default:
+        throw new Error("Unexpected request " + url.pathname);
+    }
+  }, async () => {
+    Deno.env.set("SOCIAL_SEND_ENABLED", "true");
+    Deno.env.set("SOCIAL_TELEGRAM_ENABLED", "true");
+    const response = await worker("threads_patrol", "run");
+    equal(response.status, 200);
+    const result = await response.json();
+    equal(result.found, 1);
+    equal(result.queued, 0);
+    equal(result.sent, 0);
+  });
+});
+
+Deno.test("Threads patrol records a suppressed lease when the gate closes during claim", async () => {
+  const recorded: string[] = [];
+  await withMock((url, init) => {
+    switch (url.pathname) {
+      case "/rest/v1/rpc/threads_patrol_baseline":
+        return Response.json(activation);
+      case "/v1.0/me":
+        return Response.json({ username: "owner" });
+      case "/v1.0/me/threads":
+        return Response.json({ data: [] });
+      case "/rest/v1/rpc/threads_patrol_claim":
+        Deno.env.set("SOCIAL_SEND_ENABLED", "false");
+        return Response.json([{ reply_id: "200", lease_id: "test-lease" }]);
+      case "/rest/v1/rpc/threads_patrol_uncertain": {
+        const body = JSON.parse(String(init?.body));
+        equal(body.p_lease_id, "test-lease");
+        recorded.push(body.p_error);
+        return Response.json(true);
+      }
+      default:
+        throw new Error("Unexpected request " + url.pathname);
+    }
+  }, async () => {
+    Deno.env.set("SOCIAL_SEND_ENABLED", "true");
+    Deno.env.set("SOCIAL_TELEGRAM_ENABLED", "true");
+    const response = await worker("threads_patrol", "run");
+    equal(response.status, 200);
+    const result = await response.json();
+    equal(result.sent, 0);
+    equal(recorded.join(","), "telegram_disabled_before_send");
   });
 });

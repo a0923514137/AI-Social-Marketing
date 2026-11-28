@@ -5,6 +5,10 @@ const json=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,
 const env=(k:string)=>Deno.env.get(k)?.trim()||"";
 const graph = new URL("https://graph.threads.net/v1.0/");
 
+const telegramSendEnabled = () =>
+  Deno.env.get("SOCIAL_SEND_ENABLED") === "true" &&
+  Deno.env.get("SOCIAL_TELEGRAM_ENABLED") === "true";
+
 async function threadsGet(path: string, token: string) {
   const target = new URL(path, graph);
   if (
@@ -80,7 +84,8 @@ if (
  }catch(e){return json({error:String(e).slice(0,120),writes:0,sent:0},502)}
  }
  if(input.mode!=="run"&&input.mode!=="run_preview")return json({mode:"preview",ready:!!(env("THREADS_ACCESS_TOKEN")&&env("TELEGRAM_BOT_TOKEN")&&env("TELEGRAM_CHAT_ID")&&env("SUPABASE_SERVICE_ROLE_KEY")),sent:0,writes:0});
- const dry=input.mode==="run_preview"||Deno.env.get("SOCIAL_SEND_ENABLED")!=="true"||Deno.env.get("SOCIAL_TELEGRAM_ENABLED")!=="true";
+ const dry=input.mode==="run_preview"||!telegramSendEnabled();
+ const canSend = () => !dry && telegramSendEnabled();
  const token=env("THREADS_ACCESS_TOKEN"),tg=env("TELEGRAM_BOT_TOKEN"),chat=env("TELEGRAM_CHAT_ID"),service=env("SUPABASE_SERVICE_ROLE_KEY"),url=env("SUPABASE_URL");
  if(!token||!service||!url||(!dry&&(!tg||!chat)))return json({error:"missing_secrets",sent:0},503);
  const rpc=async(name:string,payload:unknown)=>{const r=await fetch(url+"/rest/v1/rpc/"+name,{method:"POST",headers:{apikey:service,Authorization:"Bearer "+service,"content-type":"application/json"},body:JSON.stringify(payload),redirect:"error",signal:AbortSignal.timeout(5000)});if(!r.ok)throw Error("rpc_"+name+"_"+r.status);return r.json()};
@@ -121,7 +126,7 @@ if (
   continue;
 }
     found++;
-    if(!dry&&await rpc("threads_patrol_enqueue",{p_reply_id:String(reply.id),p_post_id:String(post.id),p_username:String(reply.username),p_body:String(reply.text||""),p_created_at:reply.timestamp}))queued++;
+    if(canSend()&&await rpc("threads_patrol_enqueue",{p_reply_id:String(reply.id),p_post_id:String(post.id),p_username:String(reply.username),p_body:String(reply.text||""),p_created_at:reply.timestamp}))queued++;
    }
    rn=rp.paging?.next||"";
   }
@@ -130,38 +135,36 @@ if (
  next=page.paging?.next||"";
  }
  if(next)partial=true;
- if(!dry){
+ if(canSend()){
  const claimed=await rpc("threads_patrol_claim",{p_limit:10});
  for(const item of claimed){
- let ok = false;
-let err = "delivery_unknown";
+let ok = false;
+let err = "telegram_disabled_before_send";
 
-try {
-  const rr = await fetch(
-    "https://api.telegram.org/bot" + tg + "/sendMessage",
-    {
-      method: "POST",
-      headers: {"content-type":"application/json"},
-      body: JSON.stringify({
-        chat_id: chat,
-        text: "Threads 新留言\n@" +
-          item.username + "\n" +
-          String(item.body || "").slice(0,1200)
-      }),
-      redirect: "error",
-      signal: AbortSignal.timeout(5000)
-    }
-  );
+if (canSend()) {
+  try {
+    const rr = await fetch(
+      "https://api.telegram.org/bot" + tg + "/sendMessage",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chat,
+          text: "Threads 新留言\n@" +
+            item.username + "\n" +
+            String(item.body || "").slice(0, 1200),
+        }),
+        redirect: "error",
+        signal: AbortSignal.timeout(5000),
+      },
+    );
 
-  const d = await rr.json();
-
-  ok = rr.ok && d.ok === true;
-
-  if (!ok) {
-    err = "telegram_" + rr.status;
+    const d = await rr.json();
+    ok = rr.ok && d.ok === true;
+    if (!ok) err = "telegram_" + rr.status;
+  } catch {
+    err = "telegram_delivery_unknown";
   }
-} catch {
-  err = "telegram_delivery_unknown";
 }
 
 if (ok) {
