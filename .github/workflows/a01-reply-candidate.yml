@@ -40,6 +40,7 @@ jobs:
           supabase/functions/social-webhook/routing_test.ts
           supabase/functions/social-admin/index_test.ts
           supabase/functions/shared/social_test.ts
+          supabase/functions/shared/global_keyword_candidate_test.ts
           supabase/functions/social-worker/threads_safety_test.ts
           supabase/functions/social-worker/youtube_test.ts
           supabase/functions/social-worker/youtube_gate_test.ts
