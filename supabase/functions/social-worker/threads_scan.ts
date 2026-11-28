@@ -4,6 +4,7 @@ import {
   graphDelivery,
   matchRule,
   normalize,
+  sendTargetConfigured,
   socialDatabase,
 } from "../shared/social.ts";
 
@@ -33,6 +34,14 @@ export default async function threadsScan(req: Request) {
     return Response.json({ error: "invalid_mode" }, { status: 400 });
   }
 
+  // Only the target captured for this invocation can enter the delivery path.
+  const testTarget = Deno.env.get("SOCIAL_THREADS_SINGLE_TEST_COMMENT_ID");
+  const targetConfigured = typeof testTarget === "string" &&
+    /^\d+$/.test(testTarget);
+  if (mode === "scan" && !targetConfigured) {
+    return Response.json({ error: "send_disabled", sent: 0 }, { status: 403 });
+  }
+
   const db = socialDatabase(base, service);
   const deadline = Date.now() + 25000;
   async function graph(path: string, form?: URLSearchParams) {
@@ -51,8 +60,8 @@ export default async function threadsScan(req: Request) {
 
   try {
     const activation = await db.activation();
-    const enabled = Deno.env.get("SOCIAL_SEND_ENABLED") === "true" &&
-      activation !== null;
+    const enabled = activation !== null && targetConfigured &&
+      sendTargetConfigured("threads", testTarget);
     if (mode === "preview") {
       return Response.json({
         mode,
@@ -60,6 +69,7 @@ export default async function threadsScan(req: Request) {
         db_send_enabled: activation !== null,
         baseline_ready: activation !== null,
         effective_send_enabled: enabled,
+        single_test_target_configured: targetConfigured,
         scan_supported: true,
         external_sends: 0,
         production: "NO_GO",
@@ -130,7 +140,7 @@ export default async function threadsScan(req: Request) {
         if (!rule) continue;
         matched++;
         if (eligible(c.timestamp, activation)) eligibleMatches++;
-        if (mode !== "scan") continue;
+        if (mode !== "scan" || comment !== testTarget) continue;
         const result = await deliver(db, {
           platform: "threads",
           comment,

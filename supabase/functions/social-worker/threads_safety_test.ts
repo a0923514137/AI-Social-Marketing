@@ -8,6 +8,7 @@ const scope = {
   SUPABASE_SERVICE_ROLE_KEY: "test-only-service-role",
   SUPABASE_URL: base,
   THREADS_ACCESS_TOKEN: "test-only-threads-token",
+  SOCIAL_THREADS_SINGLE_TEST_COMMENT_ID: "",
   SOCIAL_SEND_ENABLED: "false",
   SOCIAL_TELEGRAM_ENABLED: "false",
   TELEGRAM_BOT_TOKEN: "test-only-telegram-token",
@@ -238,5 +239,92 @@ Deno.test("Threads patrol records a suppressed lease when the gate closes during
     const result = await response.json();
     equal(result.sent, 0);
     equal(recorded.join(","), "telegram_disabled_before_send");
+  });
+});
+
+Deno.test("Threads single-test scan claims only its initial target and retains scheduler previews", async () => {
+  const targetFlag = "SOCIAL_THREADS_SINGLE_TEST_COMMENT_ID";
+  const claims: string[] = [];
+  const publications: string[] = [];
+  let graphReads = 0;
+  let statusWrites = 0;
+  await withMock((url, init) => {
+    if (url.hostname === "graph.threads.net" && init?.method === "GET") {
+      graphReads++;
+    }
+    switch (url.pathname) {
+      case "/rest/v1/social_reply_switch":
+        return Response.json([{ enabled: true, activated_at: activation }]);
+      case "/rest/v1/rpc/social_rules":
+        return Response.json([{
+          keyword: "sale",
+          reply_text: "Thanks",
+          global: true,
+          post_ids: [],
+        }]);
+      case "/rest/v1/rpc/social_reserve_reply": {
+        const claim = JSON.parse(String(init?.body));
+        claims.push(claim.p_comment);
+        return Response.json(claims.length === 1);
+      }
+      case "/rest/v1/r54_reply_claims":
+        equal(init?.method, "PATCH");
+        equal(url.searchParams.get("comment_id"), "eq.200");
+        statusWrites++;
+        return Response.json([{}]);
+      case "/v1.0/me":
+        return Response.json({ username: "owner" });
+      case "/v1.0/me/threads":
+        if (init?.method === "POST") {
+          const form = new URLSearchParams(String(init.body));
+          publications.push(form.get("reply_to_id") ?? "");
+          // Changing the target in flight cannot authorize a second reply.
+          Deno.env.set(targetFlag, "201");
+          return Response.json({ id: "800" });
+        }
+        return Response.json({ data: [{ id: "100" }] });
+      case "/v1.0/100/replies":
+        return Response.json({
+          data: ["199", "200", "201", "200"].map((id) => ({
+            id,
+            username: "customer",
+            text: "sale",
+            timestamp: "2026-01-03T00:00:00Z",
+          })),
+        });
+      default:
+        throw new Error("Unexpected request " + url.pathname);
+    }
+  }, async () => {
+    Deno.env.set("SOCIAL_SEND_ENABLED", "true");
+    const missingTarget = await worker("threads_scan", "scan");
+    equal(missingTarget.status, 403);
+    equal(graphReads, 0);
+
+    const preview = await worker("threads_scan", "preview");
+    equal(preview.status, 200);
+    const config = await preview.json();
+    equal(config.effective_send_enabled, false);
+    equal(config.external_sends, 0);
+
+    const scanPreview = await worker("threads_scan", "scan_preview");
+    equal(scanPreview.status, 200);
+    equal((await scanPreview.json()).matched, 3);
+    equal(claims.length, 0);
+
+    Deno.env.set(targetFlag, "200");
+    const scan = await worker("threads_scan", "scan");
+    equal(scan.status, 200);
+    equal((await scan.json()).sent, 1);
+    equal(claims.join(","), "200");
+    equal(publications.join(","), "200");
+
+    Deno.env.set(targetFlag, "200");
+    const repeated = await worker("threads_scan", "scan");
+    equal(repeated.status, 200);
+    equal((await repeated.json()).skipped, 1);
+    equal(claims.join(","), "200,200");
+    equal(publications.join(","), "200");
+    equal(statusWrites, 1);
   });
 });
