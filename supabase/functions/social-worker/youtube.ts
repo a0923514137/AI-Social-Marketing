@@ -165,6 +165,40 @@ export function createYoutubePreview({
     return response.json();
   }
 
+  function sendEnabled(target: string | undefined): boolean {
+    return typeof target === "string" &&
+      /^[A-Za-z0-9_-]{8,128}$/.test(target) &&
+      env("SOCIAL_SEND_ENABLED") === "true" &&
+      env("YOUTUBE_SEND_ENABLED") === "true" &&
+      env("YOUTUBE_SINGLE_TEST_ENABLED") === "true" &&
+      target === env("YOUTUBE_SINGLE_TEST_COMMENT_ID") &&
+      new URL(required("SUPABASE_URL")).origin === stagingOrigin;
+  }
+
+  async function previewBaseline(channel: string, now: number): Promise<number> {
+    const query = new URLSearchParams({
+      channel_id: "eq." + channel,
+      select: "baseline_at",
+    });
+    const rows = await database<{ baseline_at: string }[]>(
+      "r130_youtube_settings?" + query,
+    );
+    if (!Array.isArray(rows) || rows.length > 1) {
+      throw new PreviewError("invalid_baseline");
+    }
+    if (rows.length === 1) return Date.parse(rows[0]?.baseline_at ?? "");
+
+    const configured = env("YOUTUBE_REPLY_BASELINE_AT");
+    if (!configured) return now;
+    const baseline = Date.parse(configured);
+    if (
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/i.test(configured) ||
+      !Number.isFinite(baseline) || baseline > now) {
+      throw new PreviewError("invalid_baseline");
+    }
+    return baseline;
+  }
+
   async function globalActivation(): Promise<number> {
     const rows = await database<{ enabled: boolean; activated_at: string | null }[]>(
       "social_reply_switch?singleton=eq.true&select=enabled,activated_at",
@@ -274,7 +308,8 @@ export function createYoutubePreview({
     }
 
     try {
-      if (Date.parse(candidate.published_at) <= await globalActivation()) {
+      if (Date.parse(candidate.published_at) <= await globalActivation() ||
+        !sendEnabled(candidate.comment_id)) {
         await finish(channel, candidate.comment_id, "rejected");
         return "disabled";
       }
@@ -323,29 +358,26 @@ export function createYoutubePreview({
   }
 
   return async function poll(mode: "preview" | "run" = "preview", target?: string) {
-    if (
-      mode === "run" && (env("SOCIAL_SEND_ENABLED") !== "true" ||
-        env("YOUTUBE_SEND_ENABLED") !== "true" ||
-        new URL(required("SUPABASE_URL")).origin !== stagingOrigin)
-    ) {
+    if (mode === "run" && !sendEnabled(target)) {
       throw new PreviewError("youtube_send_disabled");
     }
-    if (mode === "run" && (!target || !/^[A-Za-z0-9_-]{8,128}$/.test(target))) throw new PreviewError("youtube_send_disabled");
     const channel = required("YOUTUBE_CHANNEL_ID");
-    const settings = await rpc<{ baseline_at: string; send_enabled: boolean }>(
-      "setup",
-      {
-        p_channel: channel,
-        p_baseline: env("YOUTUBE_REPLY_BASELINE_AT") ?? null,
-      },
-    );
-    if (mode === "run" && !settings.send_enabled) {
-      throw new PreviewError("youtube_send_disabled");
-    }
-    const baseline = Math.max(Date.parse(settings.baseline_at),
-      mode === "run" ? await globalActivation() : -Infinity);
-    if (!Number.isFinite(baseline)) throw new PreviewError("invalid_baseline");
     const now = clock();
+    let baseline: number;
+    if (mode === "run") {
+      const settings = await rpc<{ baseline_at: string; send_enabled: boolean }>(
+        "setup",
+        {
+          p_channel: channel,
+          p_baseline: env("YOUTUBE_REPLY_BASELINE_AT") ?? null,
+        },
+      );
+      if (!settings.send_enabled) throw new PreviewError("youtube_send_disabled");
+      baseline = Math.max(Date.parse(settings.baseline_at), await globalActivation());
+    } else {
+      baseline = await previewBaseline(channel, now);
+    }
+    if (!Number.isFinite(baseline)) throw new PreviewError("invalid_baseline");
     const identity = await read<Page<{ id?: string }>>("channels", {
       part: "id",
       mine: "true",

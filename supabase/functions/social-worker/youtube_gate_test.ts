@@ -4,6 +4,7 @@ const values: Record<string,string> = {
   SUPABASE_URL: "https://vnvrkbeyrhatbnjhglmv.supabase.co",
   SUPABASE_SERVICE_ROLE_KEY: "mock",
   SOCIAL_SEND_ENABLED: "true", YOUTUBE_SEND_ENABLED: "true",
+  YOUTUBE_SINGLE_TEST_ENABLED: "true", YOUTUBE_SINGLE_TEST_COMMENT_ID: "target_123",
   YOUTUBE_CHANNEL_ID: "mock-channel",
 };
 for (const row of [
@@ -27,7 +28,7 @@ for (const row of [
 }
 Deno.test("environment off blocks all network calls", async()=>{
   const poll=createYoutubePreview({env:k=>k==="SOCIAL_SEND_ENABLED"?"false":values[k],request:async()=>{throw Error("network called");},clock:()=>now});
-  let error="";try{await poll("run");}catch(e){error=(e as Error).message;}
+  let error="";try{await poll("run", "target_123");}catch(e){error=(e as Error).message;}
   if(error!=="youtube_send_disabled")throw Error(error);
 });
 
@@ -37,7 +38,7 @@ Deno.test("preview skips historical, self, duplicate and already replied comment
   const calls:string[]=[];
   const request:typeof fetch=async(input,init)=>{
     const url=String(input);calls.push(url);
-    if(url.includes("/rpc/r130_youtube_setup"))return Response.json({baseline_at:"2026-11-27T09:00:00Z",send_enabled:false});
+    if(url.includes("/r130_youtube_settings?") && (init?.method ?? "GET") === "GET")return Response.json([{baseline_at:"2026-11-27T09:00:00Z"}]);
     if(url.includes("oauth2.googleapis.com/token"))return Response.json({access_token:"mock",expires_in:3600});
     if(url.includes("/rpc/r130_youtube_reserve"))return Response.json({status:"reserved",quota_day:"2026-11-27"});
     if(url.includes("/channels?"))return Response.json({items:[{id:"mock-channel"}]});
@@ -48,7 +49,7 @@ Deno.test("preview skips historical, self, duplicate and already replied comment
   const poll=createYoutubePreview({env:k=>({...values,YOUTUBE_CLIENT_ID:"mock",YOUTUBE_CLIENT_SECRET:"mock",YOUTUBE_REFRESH_TOKEN:"mock"} as Record<string,string>)[k],request,clock:()=>now});
   const result=await poll("preview");
   if(result.sends!==0 || result.candidates.length!==1 || result.candidates[0].comment_id!=="new" || result.skipped.historical!==1 || result.skipped.self!==1 || result.skipped.duplicate!==2)throw Error("preview filtering regression");
-  if(calls.some(u=>u.includes("/comments?")))throw Error("unexpected delivery");
+  if(calls.some(u=>u.includes("/comments?") || u.includes("/rpc/r130_youtube_setup")))throw Error("unexpected delivery or settings mutation");
 });
 
 Deno.test("missing target blocks network", async()=>{

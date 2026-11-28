@@ -70,6 +70,8 @@ function fixture(
   {
     initialStatus = 200,
     hasBaseline = true,
+    storedBaseline = undefined as string | undefined,
+    closeGateAtFinalRead = false,
     identity = channel,
     sendEnabled = false,
     databaseEnabled = undefined as boolean | undefined,
@@ -85,8 +87,10 @@ function fixture(
   let inserts = 0;
   let finishFailed = false;
   let remoteReply = existingReply;
-  let persistedBaseline: string;
+  let persistedBaseline = storedBaseline;
   let currentTime = now;
+  let gateReads = 0;
+  let setupCalls = 0;
   const claims = new Map<
     string,
     { state: string; reply_text: string; attempted_at: string }
@@ -96,6 +100,8 @@ function fixture(
     SUPABASE_URL: "https://" + project,
     SOCIAL_SEND_ENABLED: String(sendEnabled),
     YOUTUBE_SEND_ENABLED: String(sendEnabled),
+    YOUTUBE_SINGLE_TEST_ENABLED: String(sendEnabled),
+    YOUTUBE_SINGLE_TEST_COMMENT_ID: target,
     SUPABASE_SERVICE_ROLE_KEY: "fixture",
     ...(hasBaseline ? { YOUTUBE_REPLY_BASELINE_AT: baseline } : {}),
     YOUTUBE_CLIENT_ID: "id",
@@ -123,9 +129,19 @@ function fixture(
             : {};
           const operation = url.pathname.split("/").at(-1);
           switch (operation) {
+            case "r130_youtube_settings":
+              equal(init?.method ?? "GET", "GET");
+              equal(url.searchParams.get("channel_id"), "eq." + channel);
+              return json(
+                persistedBaseline ? [{ baseline_at: persistedBaseline }] : [],
+              );
             case "social_reply_switch":
+              if (++gateReads === 3 && closeGateAtFinalRead) {
+                env.YOUTUBE_SINGLE_TEST_ENABLED = "false";
+              }
               return json([{ enabled: true, activated_at: baseline }]);
             case "r130_youtube_setup":
+              setupCalls++;
               persistedBaseline ??= args.p_baseline ??
                 new Date(currentTime).toISOString();
               return json({
@@ -230,6 +246,7 @@ function fixture(
     newWorker,
     refreshes: () => refreshes,
     reads: () => reads,
+    setupCalls: () => setupCalls,
     inserts: () => inserts,
     setReply: () => {
       remoteReply = true;
@@ -441,7 +458,7 @@ Deno.test("YouTube stays disabled outside Staging or with its database switch of
   }
 });
 
-Deno.test("YouTube default baseline is fixed across worker restarts", async () => {
+Deno.test("YouTube preview uses a request cutoff without creating settings", async () => {
   const pages = {
     "": {
       items: [
@@ -454,5 +471,22 @@ Deno.test("YouTube default baseline is fixed across worker restarts", async () =
   const mock = fixture(pages, { hasBaseline: false });
   equal((await mock.preview()).candidates.length, 0);
   mock.setTime(now + 2000);
-  equal((await mock.newWorker()()).candidates.length, 1);
+  equal((await mock.newWorker()()).candidates.length, 0);
+  equal(mock.setupCalls(), 0);
+  const stored = fixture(pages, {
+    storedBaseline: new Date(now + 1500).toISOString(),
+  });
+  stored.setTime(now + 2000);
+  equal((await stored.preview()).candidates.length, 0);
+  equal(stored.setupCalls(), 0);
+});
+
+Deno.test("YouTube closes a reserved send if the single-test gate changes during final activation read", async () => {
+  const mock = fixture(newComment, {
+    sendEnabled: true,
+    closeGateAtFinalRead: true,
+  });
+  const result = await mock.preview("run", target);
+  equal(result.delivery, { disabled: 1 });
+  equal([result.sends, mock.state(), mock.inserts()], [0, "rejected", 0]);
 });
