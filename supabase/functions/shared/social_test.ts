@@ -37,11 +37,14 @@ Deno.test("activation requires exactly one valid enabled singleton", async () =>
 Deno.test("shared delivery checks the environment after the DB read and keeps the claim", async () => {
   const globalGate = "SOCIAL_SEND_ENABLED";
   const platformGate = "SOCIAL_FB_SEND_ENABLED";
+  const target = "SOCIAL_FB_SINGLE_TEST_COMMENT_ID";
+  const originalTarget = Deno.env.get(target);
   const originalGlobal = Deno.env.get(globalGate);
   const originalPlatform = Deno.env.get(platformGate);
 
   Deno.env.set(globalGate, "true");
   Deno.env.set(platformGate, "true");
+  Deno.env.delete(target);
   try {
     let claimExists = false;
     let finalized = 0;
@@ -76,6 +79,11 @@ Deno.test("shared delivery checks the environment after the DB read and keeps th
       publishAttempts++;
       return Promise.resolve({ state: "sent" as const });
     };
+    expect(await deliver(db, item, publish), "disabled");
+    Deno.env.set(target, "another-comment");
+    expect(await deliver(db, item, publish), "disabled");
+    expect(claimExists, false);
+    Deno.env.set(target, item.comment);
     const outcomes = await Promise.all([
       deliver(db, item, publish),
       deliver(db, item, publish),
@@ -87,6 +95,8 @@ Deno.test("shared delivery checks the environment after the DB read and keeps th
     expect(await deliver(db, item, publish), "skipped");
     expect(publishAttempts, 0);
   } finally {
+    if (originalTarget === undefined) Deno.env.delete(target);
+    else Deno.env.set(target, originalTarget);
     if (originalGlobal === undefined) Deno.env.delete(globalGate);
     else Deno.env.set(globalGate, originalGlobal);
     if (originalPlatform === undefined) Deno.env.delete(platformGate);

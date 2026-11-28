@@ -91,6 +91,17 @@ export const sendConfigured = (platform: Platform) =>
           : "SOCIAL_IG_SEND_ENABLED",
       ) === "true");
 
+const targetEnv: Record<Platform, string> = {
+  facebook: "SOCIAL_FB_SINGLE_TEST_COMMENT_ID",
+  instagram: "SOCIAL_IG_SINGLE_TEST_COMMENT_ID",
+  threads: "SOCIAL_THREADS_SINGLE_TEST_COMMENT_ID",
+};
+
+export function sendTargetConfigured(platform: Platform, comment: unknown) {
+  return typeof comment === "string" && comment.trim().length > 0 &&
+    sendConfigured(platform) && Deno.env.get(targetEnv[platform]) === comment;
+}
+
 export function eligible(timestamp: unknown, activation: string | null) {
   const created = typeof timestamp === "string" ? Date.parse(timestamp) : NaN;
   return activation !== null && created > Date.parse(activation) &&
@@ -105,7 +116,9 @@ export async function deliver(db: SocialDatabase, item: {
   activation: string | null;
 }, publish: () => Promise<Delivery>) {
   const { platform, comment, post, timestamp, activation } = item;
-  if (!sendConfigured(platform) || !eligible(timestamp, activation)) {
+  if (
+    !sendTargetConfigured(platform, comment) || !eligible(timestamp, activation)
+  ) {
     return "disabled";
   }
   const reserved = await db.rpc<boolean>("social_reserve_reply", {
@@ -119,11 +132,11 @@ export async function deliver(db: SocialDatabase, item: {
 
   let outcome: Delivery;
   try {
-    outcome =
-      sendConfigured(platform) && await db.activation() === activation &&
-        sendConfigured(platform)
-        ? await publish()
-        : { state: "failed", errorCode: "disabled_before_send" };
+    outcome = sendTargetConfigured(platform, comment) &&
+        await db.activation() === activation &&
+        sendTargetConfigured(platform, comment)
+      ? await publish()
+      : { state: "failed", errorCode: "disabled_before_send" };
   } catch {
     outcome = { state: "uncertain", errorCode: "delivery_unknown" };
   }
